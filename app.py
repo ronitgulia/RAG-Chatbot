@@ -133,13 +133,9 @@ def show_llm_modal():
             st.rerun()
 
 
-# Show modal automatically if LLM not connected
+# Show a prominent prompt if LLM not connected (no auto-dialog to avoid rerun loops)
 if not st.session_state.llm_ready:
-    if "llm_modal_shown" not in st.session_state:
-        st.session_state["llm_modal_shown"] = False
-    if not st.session_state["llm_modal_shown"]:
-        st.session_state["llm_modal_shown"] = True
-        show_llm_modal()
+    pass  # Prompt shown inline in the chat tab and via the "Configure LLM" button
 
 
 # ═══════════════════════════════════════════════════════════════════ #
@@ -148,6 +144,10 @@ if not st.session_state.llm_ready:
 
 # Push content below fixed topbar
 st.markdown('<div style="height:70px"></div>', unsafe_allow_html=True)
+
+# Prominent LLM connection banner
+if not st.session_state.llm_ready:
+    st.warning("⚡ **Language Model not connected.** Click **Configure LLM** below to get started.")
 
 # Settings button row
 btn_col1, btn_col2, btn_col3 = st.columns([8, 1, 1])
