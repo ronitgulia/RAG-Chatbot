@@ -257,11 +257,36 @@ class RAGPipeline:
     #  Helpers                                                             #
     # ------------------------------------------------------------------ #
 
+    # Words that suggest the question references prior conversation context.
+    _CONTEXT_CUE_WORDS = {
+        "it", "its", "they", "them", "their", "theirs",
+        "this", "that", "these", "those",
+        "he", "she", "his", "her", "hers",
+        "above", "previous", "earlier", "before",
+        "same", "also", "too", "again", "more",
+    }
+
+    @staticmethod
+    def _looks_like_followup(question: str) -> bool:
+        """Return True if the question appears to reference prior context."""
+        words = set(question.lower().split())
+        return bool(words & RAGPipeline._CONTEXT_CUE_WORDS)
+
     def _make_standalone_query(self, question: str) -> str:
-        """Reformulate follow-up questions using chat history."""
+        """Reformulate follow-up questions using chat history.
+
+        Skips the (expensive) LLM rewrite when:
+        - There is no conversation history yet, OR
+        - Chat-history usage is disabled, OR
+        - The question appears self-contained (no pronouns / cue words
+          referencing earlier turns).
+        """
         if not self.memory or len(self.memory) == 0:
             return question
         if not CONFIG.conversation.use_chat_history:
+            return question
+        # Skip the LLM call when the question is already self-contained.
+        if not self._looks_like_followup(question):
             return question
         try:
             history_str = self.memory.format_history()
@@ -275,6 +300,12 @@ class RAGPipeline:
         except Exception:
             pass
         return question
+
+    def update_chunker_settings(
+        self, chunk_size: int, chunk_overlap: int, strategy: str = "recursive"
+    ):
+        """Forward chunking settings to the underlying SmartTextChunker."""
+        self.chunker.update_settings(chunk_size, chunk_overlap, strategy)
 
     def reset_conversation(self):
         self.memory.clear()

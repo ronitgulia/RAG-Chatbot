@@ -51,6 +51,13 @@ init_state()
 def get_pipeline() -> RAGPipeline:
     if st.session_state.pipeline is None:
         st.session_state.pipeline = RAGPipeline()
+        # Sync session-state chunking values into the newly-created chunker
+        # so files processed *before* the user opens the Settings panel use
+        # the correct values.
+        st.session_state.pipeline.update_chunker_settings(
+            st.session_state.chunk_size,
+            st.session_state.chunk_overlap,
+        )
     return st.session_state.pipeline
 
 
@@ -177,12 +184,32 @@ if st.session_state.get("settings_panel", False):
 
         with scol2:
             st.markdown('<p class="section-title">Chunking</p>', unsafe_allow_html=True)
-            chunk_size = st.slider("Chunk Size", 128, 2048, 512, step=64, key="s_cs")
-            chunk_overlap = st.slider("Overlap", 0, 256, 64, step=16, key="s_co")
-            strategy = st.selectbox("Strategy", ["recursive", "character", "token"], key="s_str")
-            if st.button("Apply Chunking", key="s_apply"):
-                get_pipeline().chunker.update_settings(chunk_size, chunk_overlap, strategy)
-                st.success("Chunking settings updated.")
+
+            def _sync_chunking():
+                """Called on every slider / selectbox change so settings are always live."""
+                st.session_state.chunk_size = st.session_state.s_cs
+                st.session_state.chunk_overlap = st.session_state.s_co
+                get_pipeline().update_chunker_settings(
+                    st.session_state.s_cs,
+                    st.session_state.s_co,
+                    st.session_state.s_str,
+                )
+
+            st.slider(
+                "Chunk Size", 128, 2048,
+                value=st.session_state.chunk_size,
+                step=64, key="s_cs", on_change=_sync_chunking,
+            )
+            st.slider(
+                "Overlap", 0, 256,
+                value=st.session_state.chunk_overlap,
+                step=16, key="s_co", on_change=_sync_chunking,
+            )
+            st.selectbox(
+                "Strategy", ["recursive", "character", "token"],
+                key="s_str", on_change=_sync_chunking,
+            )
+            st.caption("✅ Settings apply automatically when changed.")
 
         with scol3:
             st.markdown('<p class="section-title">Actions & Status</p>', unsafe_allow_html=True)
