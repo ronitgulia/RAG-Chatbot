@@ -381,6 +381,14 @@ with tab_docs:
                     r = get_pipeline().ingest_web_documents(docs)
                     if r["success"]:
                         st.success(f"Indexed {r['chunks_added']} chunks from {len(docs)} page(s).")
+                        for doc in docs:
+                            src = doc.get("metadata", {}).get("source", "Unknown URL")
+                            size_kb = round(len(doc.get("page_content", "")) / 1024, 1)
+                            st.session_state.doc_metadata.append({
+                                "name": src,
+                                "size_kb": size_kb,
+                                "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            })
                     else:
                         st.error(r["message"])
 
@@ -462,14 +470,27 @@ with tab_export:
             st.markdown("**Download Chat History**")
             fmt = st.selectbox("Format", ["TXT","CSV","JSON","PDF"])
             if st.button("Generate Export", use_container_width=True):
-                if fmt == "TXT":
+                try:
+                    if fmt == "TXT":
+                        data, mime, ext = export_as_txt(msgs, "RAG Chatbot Export"), "text/plain", "txt"
+                    elif fmt == "CSV":
+                        data, mime, ext = export_as_csv(msgs), "text/csv", "csv"
+                    elif fmt == "JSON":
+                        data, mime, ext = export_as_json(msgs), "application/json", "json"
+                    else:
+                        data = export_as_pdf(msgs, "RAG Chatbot Export")
+                        # export_as_pdf falls back to TXT internally when
+                        # fpdf2 is missing — detect that via a quick heuristic
+                        # (PDF bytes always start with %PDF).
+                        if data and data[:4] == b"%PDF":
+                            mime, ext = "application/pdf", "pdf"
+                        else:
+                            mime, ext = "text/plain", "txt"
+                            st.warning("PDF library not available — falling back to TXT.")
+                except Exception as e:
+                    st.error(f"Export failed: {e}")
                     data, mime, ext = export_as_txt(msgs, "RAG Chatbot Export"), "text/plain", "txt"
-                elif fmt == "CSV":
-                    data, mime, ext = export_as_csv(msgs), "text/csv", "csv"
-                elif fmt == "JSON":
-                    data, mime, ext = export_as_json(msgs), "application/json", "json"
-                else:
-                    data, mime, ext = export_as_pdf(msgs, "RAG Chatbot Export"), "application/pdf", "pdf"
+
                 st.download_button(f"Download .{ext}", data=data,
                     file_name=f"rag_chat_{ts}.{ext}", mime=mime)
 
