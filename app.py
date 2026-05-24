@@ -167,6 +167,15 @@ if not st.session_state.llm_ready:
 
 # Settings button row
 btn_col1, btn_col2, btn_col3 = st.columns([8, 1, 1])
+with btn_col1:
+    st.markdown(
+        f'<div style="padding-top:8px; color:#666; font-size:0.95em;">'
+        f'<b>Active Settings:</b> Mode: <span style="color:#2980B9">{st.session_state.search_mode.upper()}</span> '
+        f'| Top-K: <span style="color:#2980B9">{st.session_state.top_k}</span> '
+        f'| Chunk: <span style="color:#2980B9">{st.session_state.chunk_size}/{st.session_state.chunk_overlap}</span>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
 with btn_col2:
     if st.button("Configure LLM", key="btn_open_llm"):
         show_llm_modal()
@@ -355,20 +364,40 @@ with tab_docs:
         )
         if uploaded:
             if st.button("Process Files", use_container_width=True):
-                with st.spinner("Indexing..."):
-                    result = get_pipeline().ingest_files(uploaded)
-                if result["success"]:
-                    st.success(f"Indexed {result['chunks_added']} chunks from {len(uploaded)} file(s).")
-                    for f in uploaded:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                total_files = len(uploaded)
+                
+                success_count = 0
+                total_chunks = 0
+                all_errors = []
+                
+                for i, file in enumerate(uploaded):
+                    status_text.text(f"Processing {file.name} ({i+1}/{total_files})...")
+                    result = get_pipeline().ingest_files([file])
+                    
+                    if result["success"]:
+                        success_count += 1
+                        total_chunks += result.get("chunks_added", 0)
                         st.session_state.doc_metadata.append({
-                            "name": f.name,
-                            "size_kb": round(f.size / 1024, 1),
+                            "name": file.name,
+                            "size_kb": round(file.size / 1024, 1),
                             "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                         })
                     if result.get("errors"):
-                        st.warning("Errors: " + "; ".join(result["errors"]))
-                else:
-                    st.error(result["message"])
+                        all_errors.extend(result["errors"])
+                        
+                    progress_bar.progress((i + 1) / total_files)
+                
+                status_text.empty()
+                progress_bar.empty()
+                
+                if success_count > 0:
+                    st.success(f"Indexed {total_chunks} chunks from {success_count} file(s).")
+                if all_errors:
+                    st.warning("Errors: " + "; ".join(all_errors))
+                if success_count == 0 and not all_errors:
+                    st.error("Failed to process files.")
 
     with col_web:
         st.markdown("**Web Scraping**")
