@@ -5,6 +5,9 @@ White background, Orbitron + Rajdhani fonts, modal-based config, settings popove
 import streamlit as st
 import logging
 from datetime import datetime
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
 st.set_page_config(
     page_title="RAG Chatbot",
@@ -447,7 +450,6 @@ with tab_docs:
     if st.session_state.doc_metadata:
         st.markdown("---")
         st.markdown("**Indexed Documents**")
-        import pandas as pd
         st.dataframe(pd.DataFrame(st.session_state.doc_metadata),
                      use_container_width=True, hide_index=True)
         if st.button("Clear All Documents"):
@@ -463,10 +465,6 @@ with tab_eval:
     if not st.session_state.eval_history:
         st.info("No evaluation data yet. Start chatting to collect metrics.")
     else:
-        import pandas as pd
-        import plotly.express as px
-        import plotly.graph_objects as go
-
         df = pd.DataFrame(st.session_state.eval_history)
 
         c1, c2, c3, c4 = st.columns(4)
@@ -549,7 +547,6 @@ with tab_export:
         with ecol2:
             st.markdown("**Evaluation Report**")
             if st.session_state.eval_history:
-                import pandas as pd
                 csv_b = pd.DataFrame(st.session_state.eval_history).to_csv(index=False).encode("utf-8")
                 st.download_button("Download Evaluation CSV", data=csv_b,
                     file_name=f"rag_eval_{ts}.csv", mime="text/csv",
