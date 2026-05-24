@@ -378,9 +378,23 @@ with tab_docs:
         follow = st.checkbox("Follow internal links")
         max_p  = st.number_input("Max pages", 1, 20, 5)
         if st.button("Scrape and Index", use_container_width=True):
-            urls = [u.strip() for u in urls_input.strip().splitlines() if u.strip()]
+            from urllib.parse import urlparse
+            raw_urls = [u.strip() for u in urls_input.strip().splitlines() if u.strip()]
+            urls = []
+            invalid_urls = []
+            for u in raw_urls:
+                parsed = urlparse(u)
+                if parsed.scheme in ("http", "https") and parsed.netloc:
+                    urls.append(u)
+                else:
+                    invalid_urls.append(u)
+            
+            if invalid_urls:
+                st.warning(f"Ignored invalid or non-HTTP URLs: {', '.join(invalid_urls)}")
+            
             if not urls:
-                st.warning("Enter at least one URL.")
+                if not invalid_urls:
+                    st.warning("Enter at least one URL.")
             else:
                 with st.spinner(f"Scraping {len(urls)} URL(s)..."):
                     docs = st.session_state.scraper.scrape_multiple(urls, follow_links=follow, max_pages=max_p)

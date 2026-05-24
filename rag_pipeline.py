@@ -4,6 +4,9 @@ Core RAG Pipeline — orchestrates all components end-to-end.
 
 import hashlib
 import logging
+import re
+import threading
+import uuid
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -42,15 +45,20 @@ Question: {question}
 
 Answer:"""
 
-STANDALONE_QUESTION_PROMPT = """Given the chat history below and a follow-up question,
-rephrase the follow-up question to be a standalone question that captures all necessary context.
-
-Chat History:
-{history}
-
-Follow-up Question: {question}
-
-Standalone Question:"""
+# Common English stopwords filtered out during key-term extraction so that
+# only meaningful, domain-relevant terms survive.
+_STOPWORDS: set = {
+    "about", "after", "again", "also", "answer", "based", "because", "before",
+    "being", "between", "called", "could", "different", "during", "each",
+    "example", "first", "following", "found", "given", "groups", "having",
+    "however", "include", "information", "known", "large", "listed", "making",
+    "might", "never", "number", "often", "other", "people", "possible",
+    "provide", "provided", "question", "rather", "result", "results",
+    "second", "several", "should", "simple", "since", "something", "source",
+    "still", "support", "system", "their", "there", "these", "thing",
+    "things", "those", "though", "through", "under", "using", "various",
+    "which", "while", "within", "without", "would",
+}
 
 
 class ConversationMemory:
@@ -106,6 +114,10 @@ class RAGPipeline:
         self._ingested_sources: List[str] = []
         # Track content hashes to prevent duplicate chunks.
         self._chunk_hashes: set = set()
+
+        # Async evaluation bookkeeping
+        self._eval_results: Dict[str, Optional[EvaluationResult]] = {}
+        self._eval_lock = threading.Lock()
 
         # Restore persisted vector store (survives page refreshes).
         if self.vector_store.load():
@@ -273,14 +285,20 @@ class RAGPipeline:
         self.memory.add("user", question)
         self.memory.add("assistant", answer)
 
-        # 9. Evaluate
-        eval_result: Optional[EvaluationResult] = None
+        # 9. Evaluate — fire-and-forget in a background thread so the
+        #    answer is returned to the user immediately.
+        eval_id: Optional[str] = None
         if evaluate and retrieved:
-            try:
-                contexts_texts = [c["page_content"] for c in retrieved]
-                eval_result = self.evaluator.evaluate(english_query, answer, contexts_texts)
-            except Exception as e:
-                logger.warning(f"Evaluation failed: {e}")
+            eval_id = uuid.uuid4().hex[:8]
+            contexts_texts = [c["page_content"] for c in retrieved]
+            with self._eval_lock:
+                self._eval_results[eval_id] = None  # placeholder
+            t = threading.Thread(
+                target=self._run_eval_background,
+                args=(eval_id, english_query, answer, contexts_texts),
+                daemon=True,
+            )
+            t.start()
 
         # 10. Compile sources
         sources = list({
@@ -291,7 +309,8 @@ class RAGPipeline:
             "answer": answer,
             "sources": sources,
             "chunks": retrieved,
-            "evaluation": eval_result,
+            "evaluation": None,
+            "eval_id": eval_id,
             "query_language": detected_lang,
             "lang_confidence": lang_confidence,
             "retrieval_mode": search_mode,
@@ -300,6 +319,40 @@ class RAGPipeline:
 
     # ------------------------------------------------------------------ #
     #  Helpers                                                             #
+    # ------------------------------------------------------------------ #
+
+    # ------------------------------------------------------------------ #
+    #  Async Evaluation helpers                                            #
+    # ------------------------------------------------------------------ #
+
+    def _run_eval_background(
+        self, eval_id: str, question: str, answer: str, contexts: List[str]
+    ):
+        """Run evaluation in a daemon thread and stash the result."""
+        try:
+            result = self.evaluator.evaluate(question, answer, contexts)
+        except Exception as e:
+            logger.warning(f"Background eval failed: {e}")
+            result = None
+        with self._eval_lock:
+            self._eval_results[eval_id] = result
+
+    def get_eval_result(self, eval_id: str) -> Optional[EvaluationResult]:
+        """Return the evaluation result for *eval_id*, or None if still pending.
+
+        A completed result is removed from the internal dict to free memory.
+        """
+        if eval_id is None:
+            return None
+        with self._eval_lock:
+            result = self._eval_results.get(eval_id)
+            if result is not None:
+                del self._eval_results[eval_id]
+                return result
+        return None  # still running
+
+    # ------------------------------------------------------------------ #
+    #  Lightweight query rewrite (no LLM call)                             #
     # ------------------------------------------------------------------ #
 
     # Words that suggest the question references prior conversation context.
@@ -317,34 +370,64 @@ class RAGPipeline:
         words = set(question.lower().split())
         return bool(words & RAGPipeline._CONTEXT_CUE_WORDS)
 
-    def _make_standalone_query(self, question: str) -> str:
-        """Reformulate follow-up questions using chat history.
+    def _get_last_assistant_message(self) -> Optional[str]:
+        """Retrieve the most recent assistant message from memory."""
+        for msg in reversed(self.memory.get_history()):
+            if msg["role"] == "assistant":
+                return msg["content"]
+        return None
 
-        Skips the (expensive) LLM rewrite when:
-        - There is no conversation history yet, OR
-        - Chat-history usage is disabled, OR
-        - The question appears self-contained (no pronouns / cue words
-          referencing earlier turns).
+    @staticmethod
+    def _extract_key_terms(text: str, max_terms: int = 6) -> List[str]:
+        """Extract salient terms from *text* using cheap regex heuristics.
+
+        Priority order: capitalised phrases → quoted terms → long words.
+        Common stopwords are filtered out.
+        """
+        # Capitalised multi-word phrases (proper nouns, titles)
+        caps = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b", text)
+        # Quoted terms
+        quoted = re.findall(r'"([^"]+)"', text) + re.findall(r"'([^']+)'", text)
+        # Longer words (likely domain-specific)
+        words = re.findall(r"\b[a-zA-Z]{6,}\b", text)
+
+        seen: set = set()
+        result: List[str] = []
+        for term in caps + quoted + words:
+            key = term.lower().strip()
+            if key not in seen and key not in _STOPWORDS:
+                seen.add(key)
+                result.append(term)
+            if len(result) >= max_terms:
+                break
+        return result
+
+    def _make_standalone_query(self, question: str) -> str:
+        """Contextualise follow-up questions using chat history.
+
+        Uses a zero-cost rule-based heuristic instead of an LLM call:
+        extracts key terms from the last assistant response and prepends
+        them to the query, giving the retriever the extra keywords it
+        needs without burning an API call or risking rate limits.
         """
         if not self.memory or len(self.memory) == 0:
             return question
         if not CONFIG.conversation.use_chat_history:
             return question
-        # Skip the LLM call when the question is already self-contained.
         if not self._looks_like_followup(question):
             return question
-        try:
-            history_str = self.memory.format_history()
-            prompt = STANDALONE_QUESTION_PROMPT.format(
-                history=history_str, question=question
-            )
-            standalone = self.llm.generate(prompt)
-            # Validate that it returned something sensible
-            if standalone and len(standalone.strip()) > 10:
-                return standalone.strip()
-        except Exception:
-            pass
-        return question
+
+        last_response = self._get_last_assistant_message()
+        if not last_response:
+            return question
+
+        key_terms = self._extract_key_terms(last_response, max_terms=6)
+        if not key_terms:
+            return question
+
+        rewritten = f"Regarding {', '.join(key_terms)}: {question}"
+        logger.info(f"Query rewrite (rule-based): {rewritten}")
+        return rewritten
 
     def update_chunker_settings(
         self, chunk_size: int, chunk_overlap: int, strategy: str = "recursive"
