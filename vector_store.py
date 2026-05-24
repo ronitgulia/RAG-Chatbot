@@ -57,9 +57,32 @@ class VectorStoreManager:
         """Incrementally add chunks to an existing store."""
         if not chunks:
             return
-        existing = self._documents or []
-        all_chunks = existing + chunks
-        self.build_from_chunks(all_chunks)
+
+        # If no store exists yet, just do a full build.
+        if not self._documents:
+            self.build_from_chunks(chunks)
+            return
+
+        new_texts = [c["page_content"] for c in chunks]
+        new_metadatas = [c["metadata"] for c in chunks]
+
+        # --- Dense index: add only new vectors ---
+        if self._store_type == "faiss" and self._faiss_index:
+            self._faiss_index.add_texts(new_texts, metadatas=new_metadatas)
+        elif self._store_type == "chroma" and self._chroma_db:
+            self._chroma_db.add_texts(new_texts, metadatas=new_metadatas)
+
+        # --- Append to document list ---
+        self._documents.extend(chunks)
+
+        # --- Rebuild BM25 over all documents (cheap, no embeddings) ---
+        all_texts = [c["page_content"] for c in self._documents]
+        self._build_bm25(all_texts)
+
+        logger.info(
+            f"Incrementally added {len(chunks)} chunks "
+            f"(total: {len(self._documents)})."
+        )
 
     def _build_faiss(self, texts: List[str]) -> None:
         import faiss
