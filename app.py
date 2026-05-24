@@ -58,6 +58,15 @@ def get_pipeline() -> RAGPipeline:
             st.session_state.chunk_size,
             st.session_state.chunk_overlap,
         )
+        # If the vector store was restored from cache, rebuild doc_metadata
+        # so the "Indexed Documents" table repopulates after a page refresh.
+        if st.session_state.pipeline.vector_store.is_ready and not st.session_state.doc_metadata:
+            for src in st.session_state.pipeline.vector_store.get_document_sources():
+                st.session_state.doc_metadata.append({
+                    "name": src,
+                    "size_kb": "—",
+                    "uploaded_at": "restored from cache",
+                })
     return st.session_state.pipeline
 
 

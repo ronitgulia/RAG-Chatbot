@@ -2,6 +2,7 @@
 Core RAG Pipeline — orchestrates all components end-to-end.
 """
 
+import hashlib
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
@@ -103,6 +104,21 @@ class RAGPipeline:
         self.memory = ConversationMemory()
         self.multilingual = MultilingualHandler(enabled=True)
         self._ingested_sources: List[str] = []
+        # Track content hashes to prevent duplicate chunks.
+        self._chunk_hashes: set = set()
+
+        # Restore persisted vector store (survives page refreshes).
+        if self.vector_store.load():
+            # Rebuild the hash set from previously indexed chunks.
+            for doc in self.vector_store._documents:
+                h = hashlib.md5(doc["page_content"].encode("utf-8")).hexdigest()
+                self._chunk_hashes.add(h)
+            # Restore ingested sources list.
+            self._ingested_sources = self.vector_store.get_document_sources()
+            logger.info(
+                f"Restored {self.vector_store.document_count} chunks from cache "
+                f"({len(self._ingested_sources)} sources)."
+            )
 
     # ------------------------------------------------------------------ #
     #  Document Ingestion                                                  #
@@ -135,22 +151,51 @@ class RAGPipeline:
         if not chunks:
             return {"success": False, "message": "Chunking produced no output.", "errors": errors}
 
+        # --- Deduplicate: drop chunks whose content we have already indexed ---
+        unique_chunks = []
+        for chunk in chunks:
+            h = hashlib.md5(chunk["page_content"].encode("utf-8")).hexdigest()
+            if h not in self._chunk_hashes:
+                self._chunk_hashes.add(h)
+                unique_chunks.append(chunk)
+
+        skipped = len(chunks) - len(unique_chunks)
+        if skipped:
+            logger.info(f"Deduplication: skipped {skipped} duplicate chunk(s).")
+
+        if not unique_chunks:
+            return {
+                "success": True,
+                "chunks_added": 0,
+                "total_chunks": self.vector_store.document_count,
+                "sources": self._ingested_sources,
+                "errors": errors,
+                "duplicates_skipped": skipped,
+            }
+
         if self.vector_store.is_ready:
-            self.vector_store.add_chunks(chunks)
+            self.vector_store.add_chunks(unique_chunks)
         else:
-            self.vector_store.build_from_chunks(chunks)
+            self.vector_store.build_from_chunks(unique_chunks)
 
         for doc in docs:
             src = doc.get("metadata", {}).get("source", "Unknown")
             if src not in self._ingested_sources:
                 self._ingested_sources.append(src)
 
+        # Persist the updated index so it survives page refreshes.
+        try:
+            self.vector_store.save()
+        except Exception as e:
+            logger.warning(f"Failed to persist vector store: {e}")
+
         return {
             "success": True,
-            "chunks_added": len(chunks),
+            "chunks_added": len(unique_chunks),
             "total_chunks": self.vector_store.document_count,
             "sources": self._ingested_sources,
             "errors": errors,
+            "duplicates_skipped": skipped,
         }
 
     # ------------------------------------------------------------------ #
@@ -314,6 +359,16 @@ class RAGPipeline:
         self.vector_store.clear()
         self.memory.clear()
         self._ingested_sources = []
+        self._chunk_hashes.clear()
+        # Delete the persisted cache file.
+        import os
+        cache_path = "vector_store_cache.pkl"
+        if os.path.exists(cache_path):
+            try:
+                os.remove(cache_path)
+                logger.info(f"Deleted vector store cache: {cache_path}")
+            except OSError as e:
+                logger.warning(f"Could not delete cache file: {e}")
 
     @property
     def is_ready(self) -> bool:
