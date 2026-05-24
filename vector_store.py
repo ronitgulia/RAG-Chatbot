@@ -246,7 +246,13 @@ class VectorStoreManager:
 
     @property
     def is_ready(self) -> bool:
-        return bool(self._documents)
+        if not self._documents:
+            return False
+        if self._store_type == "faiss":
+            return self._faiss_index is not None
+        if self._store_type == "chroma":
+            return self._chroma_db is not None
+        return False
 
     @property
     def document_count(self) -> int:

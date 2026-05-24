@@ -66,7 +66,7 @@ class ConversationMemory:
             "timestamp": datetime.now().strftime("%H:%M:%S"),
         })
         # Keep only the last max_turns pairs
-        if len(self._history) > self.max_turns * 2:
+        if len(self._history) >= self.max_turns * 2:
             self._history = self._history[-(self.max_turns * 2):]
 
     def get_history(self) -> List[Dict[str, str]]:
