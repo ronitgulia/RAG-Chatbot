@@ -303,10 +303,12 @@ with tab_chat:
                         src = chunk.get("metadata", {}).get("source", "Unknown")
                         pg  = chunk.get("metadata", {}).get("page", "")
                         pg_str = f" · Page {pg}" if pg else ""
+                        content = chunk.get("page_content", "")
+                        display_text = content[:400] + ("..." if len(content) > 400 else "")
                         st.markdown(
                             f'<div class="chunk-card">'
                             f'<span class="chunk-source">[{i+1}] {src}{pg_str}</span>'
-                            f'<p class="chunk-text">{chunk["page_content"][:400]}...</p>'
+                            f'<p class="chunk-text">{display_text}</p>'
                             f'</div>',
                             unsafe_allow_html=True,
                         )
