@@ -449,6 +449,79 @@ with tab_docs:
                     else:
                         st.error(r["message"])
 
+    st.markdown("---")
+    st.markdown("**Wikipedia Integration**")
+    wiki_col1, wiki_col2 = st.columns([3, 1])
+    with wiki_col1:
+        wiki_topic = st.text_input("Enter Wikipedia Topic", placeholder="e.g. Albert Einstein", label_visibility="collapsed")
+    with wiki_col2:
+        fetch_wiki = st.button("Fetch & Summarize", use_container_width=True)
+        
+    if fetch_wiki:
+        if not wiki_topic.strip():
+            st.warning("Please enter a topic.")
+        else:
+            with st.spinner(f"Fetching Wikipedia page for '{wiki_topic}'..."):
+                try:
+                    import wikipedia
+                    page = wikipedia.page(wiki_topic, auto_suggest=True)
+                    content = page.content
+                    title = page.title
+                    url = page.url
+                    
+                    docs = [{
+                        "page_content": content,
+                        "metadata": {
+                            "source": url,
+                            "title": title,
+                            "file_type": "wikipedia",
+                        }
+                    }]
+                    r = get_pipeline().ingest_web_documents(docs)
+                    
+                    if r["success"]:
+                        st.success(f"Indexed {r['chunks_added']} chunks from Wikipedia: {title}")
+                        st.session_state.doc_metadata.append({
+                            "name": url,
+                            "size_kb": round(len(content) / 1024, 1),
+                            "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        })
+                        
+                        p = get_pipeline()
+                        if p.llm.is_ready:
+                            with st.spinner("Generating full detail analysis and summary..."):
+                                result = p.query(
+                                    question=f"Provide a full detail analysis and comprehensive summary of the topic: {title}. Focus on the most important information.",
+                                    top_k=15,
+                                    search_mode="hybrid",
+                                    evaluate=False
+                                )
+                                st.markdown("### Wikipedia Analysis & Summary")
+                                st.info(result["answer"])
+                                
+                                ts = datetime.now().strftime("%H:%M:%S")
+                                st.session_state.messages.append({"role": "user", "content": f"Fetch and summarize Wikipedia page for: {title}", "timestamp": ts})
+                                st.session_state.messages.append({
+                                    "role": "assistant", 
+                                    "content": result["answer"], 
+                                    "timestamp": ts, 
+                                    "sources": result.get("sources", []),
+                                    "chunks": result.get("chunks", [])
+                                })
+                        else:
+                            st.warning("LLM not configured. Content indexed, but summary skipped. Please configure LLM in Settings.")
+                    else:
+                        st.error(r["message"])
+                except ImportError:
+                    st.error("The 'wikipedia' Python package is not installed. Please install it using `pip install wikipedia`.")
+                except Exception as e:
+                    if "DisambiguationError" in str(type(e)):
+                        st.error(f"Topic is ambiguous. Try a more specific term.")
+                    elif "PageError" in str(type(e)):
+                        st.error(f"No Wikipedia page found for '{wiki_topic}'.")
+                    else:
+                        st.error(f"Error fetching Wikipedia content: {e}")
+
     if st.session_state.doc_metadata:
         st.markdown("---")
         st.markdown("**Indexed Documents**")
