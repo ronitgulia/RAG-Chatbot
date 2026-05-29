@@ -210,6 +210,50 @@ class RAGPipeline:
             "duplicates_skipped": skipped,
         }
 
+    def generate_suggestions(self, docs: List[Dict[str, Any]]) -> List[str]:
+        """Generate 5 suggested questions based on the provided documents."""
+        if not self.llm.is_ready or not docs:
+            return []
+            
+        # Sample text to give context (max ~2000 chars to save tokens/time)
+        context_parts = []
+        char_count = 0
+        for d in docs:
+            text = d.get("page_content", "")
+            if char_count + len(text) > 2000:
+                text = text[:2000 - char_count]
+            if text:
+                context_parts.append(text)
+                char_count += len(text)
+            if char_count >= 2000:
+                break
+                
+        context = "\n".join(context_parts)
+        if not context.strip():
+            return []
+
+        prompt = (
+            "You are an AI assistant. Based on the following document excerpt, generate exactly 5 interesting "
+            "and diverse questions that a user might want to ask about this document. "
+            "Output ONLY the questions, one per line, with no numbering, bullet points, or introductory text.\n\n"
+            f"Document Excerpt:\n{context}\n\nQuestions:"
+        )
+
+        try:
+            response = self.llm.generate(prompt)
+            questions = []
+            for line in response.split('\n'):
+                line = line.strip()
+                # Remove common numbering/bullets if the LLM adds them anyway
+                line = re.sub(r'^[\d\-\*\.\)]+\s*', '', line)
+                if line and len(line) > 5 and "?" in line:
+                    questions.append(line)
+            
+            return questions[:5]
+        except Exception as e:
+            logger.error(f"Failed to generate suggestions: {e}")
+            return []
+
     # ------------------------------------------------------------------ #
     #  Query                                                               #
     # ------------------------------------------------------------------ #

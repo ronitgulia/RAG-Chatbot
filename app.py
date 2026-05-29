@@ -43,6 +43,7 @@ def init_state():
         "show_llm_modal": False,
         "chunk_size": 512,
         "chunk_overlap": 64,
+        "suggestions": [],
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -321,10 +322,22 @@ with tab_chat:
                         )
 
     p = get_pipeline()
+
+    selected_sugg = None
+    if st.session_state.get("suggestions"):
+        st.markdown("<p style='color:#666; font-size:0.9em; margin-top:20px; margin-bottom:5px'>💡 Suggested Questions:</p>", unsafe_allow_html=True)
+        for i, s in enumerate(st.session_state.suggestions):
+            if st.button(s, key=f"sugg_{i}"):
+                selected_sugg = s
+
     user_input = st.chat_input(
         "Ask a question about your documents...",
         disabled=not (p.llm.is_ready and p.vector_store.is_ready),
     )
+
+    if selected_sugg:
+        user_input = selected_sugg
+        st.session_state.suggestions = []
 
     if user_input:
         ts = datetime.now().strftime("%H:%M:%S")
@@ -406,6 +419,11 @@ with tab_docs:
                 
                 if success_count > 0:
                     st.success(f"Indexed {total_chunks} chunks from {success_count} file(s).")
+                    p = get_pipeline()
+                    if p.llm.is_ready and p.vector_store._documents:
+                        with st.spinner("Generating auto-suggestions..."):
+                            recent_docs = [{"page_content": c["page_content"]} for c in p.vector_store._documents[-10:]]
+                            st.session_state.suggestions = p.generate_suggestions(recent_docs)
                 if all_errors:
                     st.warning("Errors: " + "; ".join(all_errors))
                 if success_count == 0 and not all_errors:
@@ -445,6 +463,11 @@ with tab_docs:
                     r = get_pipeline().ingest_web_documents(docs)
                     if r["success"]:
                         st.success(f"Indexed {r['chunks_added']} chunks from {len(docs)} page(s).")
+                        p = get_pipeline()
+                        if p.llm.is_ready:
+                            with st.spinner("Generating auto-suggestions..."):
+                                st.session_state.suggestions = p.generate_suggestions(docs)
+                        
                         for doc in docs:
                             src = doc.get("metadata", {}).get("source", "Unknown URL")
                             size_kb = round(len(doc.get("page_content", "")) / 1024, 1)
