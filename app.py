@@ -272,8 +272,8 @@ if st.session_state.get("settings_panel", False):
 #  Main Tabs                                                           #
 # ═══════════════════════════════════════════════════════════════════ #
 
-tab_chat, tab_docs, tab_eval, tab_export = st.tabs(
-    ["Chat", "Documents", "Evaluation", "Export"]
+tab_chat, tab_docs, tab_eval, tab_explorer, tab_export = st.tabs(
+    ["Chat", "Documents", "Evaluation", "Chunk Explorer", "Export"]
 )
 
 
@@ -585,6 +585,48 @@ with tab_eval:
         if st.button("Clear Evaluation History"):
             st.session_state.eval_history = []
             st.rerun()
+
+
+# ── Chunk Explorer ───────────────────────────────────────────────────
+with tab_explorer:
+    st.markdown('<p class="section-title">Chunk Explorer</p>', unsafe_allow_html=True)
+    
+    p = get_pipeline()
+    if not p.vector_store.is_ready or not p.vector_store._documents:
+        st.info("No documents indexed. Upload documents first to visualize chunks.")
+    else:
+        sources = p.vector_store.get_document_sources()
+        selected_source = st.selectbox("Select Document to Inspect", sources)
+        
+        last_retrieved_contents = []
+        if st.session_state.messages:
+            last_msg = st.session_state.messages[-1]
+            if last_msg["role"] == "assistant" and last_msg.get("chunks"):
+                # Use string matching (or hashing) to find retrieved chunks
+                last_retrieved_contents = [c.get("page_content", "") for c in last_msg["chunks"]]
+        
+        if selected_source:
+            doc_chunks = [c for c in p.vector_store._documents if c.get("metadata", {}).get("source") == selected_source]
+            
+            st.markdown(f"**Total Chunks for `{selected_source}`:** {len(doc_chunks)}")
+            if last_retrieved_contents:
+                st.caption("Chunks highlighted in green were retrieved to answer your last question.")
+            
+            for i, chunk in enumerate(doc_chunks):
+                content = chunk.get("page_content", "")
+                is_retrieved = content in last_retrieved_contents
+                
+                border_color = "#27AE60" if is_retrieved else "#E0E0E0"
+                bg_color = "#EAFAF1" if is_retrieved else "#FAFAFA"
+                badge = '<span style="background:#27AE60;color:white;padding:2px 8px;border-radius:12px;font-size:0.8em;margin-left:10px;">⭐ Retrieved for Last Answer</span>' if is_retrieved else ""
+                
+                st.markdown(
+                    f'<div style="border: 2px solid {border_color}; background-color: {bg_color}; padding: 15px; border-radius: 8px; margin-bottom: 10px;">'
+                    f'<div style="font-weight: bold; margin-bottom: 8px; color: #333; font-family: Rajdhani, sans-serif; font-size: 1.1em;">Chunk {i+1} {badge}</div>'
+                    f'<div style="color: #444; white-space: pre-wrap; font-size: 0.95em;">{content}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
 
 
 # ── Export ───────────────────────────────────────────────────────────
