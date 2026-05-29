@@ -1,5 +1,11 @@
 # RAG Chatbot
 
+![Python](https://img.shields.io/badge/Python-3.11-blue)
+![LangChain](https://img.shields.io/badge/LangChain-latest-green)
+![Groq](https://img.shields.io/badge/Groq-Free-orange)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.35-red)
+![License](https://img.shields.io/badge/License-MIT-yellow)
+
 A production-grade **Retrieval-Augmented Generation (RAG)** chatbot built with LangChain, FAISS, Groq, and Streamlit. Upload documents or scrape websites and chat with your knowledge base using free LLMs.
 
 ## Features
