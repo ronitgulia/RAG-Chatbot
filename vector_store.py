@@ -220,11 +220,13 @@ class VectorStoreManager:
             "documents": self._documents,
             "store_type": self._store_type,
         }
-        if self._store_type == "faiss" and self._faiss_index:
-            data["faiss_bytes"] = self._faiss_index.serialize_to_bytes()
         with open(path, "wb") as f:
             pickle.dump(data, f)
-        logger.info(f"Vector store saved to {path}.")
+            
+        if self._store_type == "faiss" and self._faiss_index:
+            self._faiss_index.save_local("faiss_index")
+            
+        logger.info(f"Vector store saved to {path} and faiss_index directory.")
 
     def load(self, path: str = "vector_store_cache.pkl") -> bool:
         if not os.path.exists(path):
@@ -234,12 +236,24 @@ class VectorStoreManager:
         self._documents = data["documents"]
         self._store_type = data["store_type"]
         texts = [d["page_content"] for d in self._documents]
-        if self._store_type == "faiss" and "faiss_bytes" in data:
+        
+        if self._store_type == "faiss":
             from langchain_community.vectorstores import FAISS
             lc_emb = self.embedding_model.get_langchain_embeddings()
-            self._faiss_index = FAISS.deserialize_from_bytes(
-                data["faiss_bytes"], lc_emb
-            )
+            
+            # Support legacy byte-serialized format
+            if "faiss_bytes" in data:
+                self._faiss_index = FAISS.deserialize_from_bytes(
+                    data["faiss_bytes"], lc_emb
+                )
+            # Load from standard faiss_index directory
+            elif os.path.exists("faiss_index"):
+                try:
+                    self._faiss_index = FAISS.load_local("faiss_index", lc_emb, allow_dangerous_deserialization=True)
+                except TypeError:
+                    # Fallback for older langchain versions
+                    self._faiss_index = FAISS.load_local("faiss_index", lc_emb)
+                    
         self._build_bm25(texts)
         logger.info(f"Vector store loaded from {path} ({len(self._documents)} chunks).")
         return True

@@ -443,8 +443,9 @@ class RAGPipeline:
         self.memory.clear()
         self._ingested_sources = []
         self._chunk_hashes.clear()
-        # Delete the persisted cache file.
+        # Delete the persisted cache files.
         import os
+        import shutil
         cache_path = "vector_store_cache.pkl"
         if os.path.exists(cache_path):
             try:
@@ -452,6 +453,14 @@ class RAGPipeline:
                 logger.info(f"Deleted vector store cache: {cache_path}")
             except OSError as e:
                 logger.warning(f"Could not delete cache file: {e}")
+                
+        faiss_dir = "faiss_index"
+        if os.path.exists(faiss_dir):
+            try:
+                shutil.rmtree(faiss_dir)
+                logger.info(f"Deleted faiss index directory: {faiss_dir}")
+            except OSError as e:
+                logger.warning(f"Could not delete faiss index directory: {e}")
 
     @property
     def is_ready(self) -> bool:
