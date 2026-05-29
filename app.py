@@ -273,7 +273,7 @@ if st.session_state.get("settings_panel", False):
 # ═══════════════════════════════════════════════════════════════════ #
 
 tab_chat, tab_docs, tab_eval, tab_explorer, tab_export = st.tabs(
-    ["Chat", "Documents", "Evaluation", "Chunk Explorer", "Export"]
+    ["Chat", "Documents", "RAGAS Dashboard", "Chunk Explorer", "Export"]
 )
 
 
@@ -540,9 +540,10 @@ with tab_docs:
             st.rerun()
 
 
-# ── Evaluation ───────────────────────────────────────────────────────
+# ── RAGAS Dashboard ───────────────────────────────────────────────────────
 with tab_eval:
-    st.markdown('<p class="section-title">Evaluation Dashboard</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-title">RAGAS Dashboard</p>', unsafe_allow_html=True)
+    st.caption("Track your pipeline's retrieval and generation quality over time.")
 
     if not st.session_state.eval_history:
         st.info("No evaluation data yet. Start chatting to collect metrics.")
@@ -558,14 +559,33 @@ with tab_eval:
         st.markdown("---")
         ca, cb = st.columns(2)
         with ca:
-            fig = px.line(df.reset_index(), x="index",
-                y=["faithfulness","answer_relevancy","context_precision","overall_score"],
-                color_discrete_sequence=["#C0392B","#E67E22","#27AE60","#2980B9"],
-                labels={"index":"Query #","value":"Score","variable":"Metric"})
+            st.markdown("**Score History & Trend (Improvement Over Time)**")
+            # Calculate rolling average to show trend
+            df_trend = df[["faithfulness", "answer_relevancy", "context_precision", "overall_score"]].rolling(window=3, min_periods=1).mean()
+            df_plot = df.reset_index()
+            
+            fig = go.Figure()
+            colors = {"faithfulness": "#C0392B", "answer_relevancy": "#E67E22", 
+                      "context_precision": "#27AE60", "overall_score": "#2980B9"}
+            
+            for col, color in colors.items():
+                name = col.replace("_", " ").title()
+                # Raw scores
+                fig.add_trace(go.Scatter(x=df_plot["index"], y=df_plot[col], 
+                                         mode='markers', name=name,
+                                         marker=dict(color=color, size=6), opacity=0.4))
+                # Trend line
+                fig.add_trace(go.Scatter(x=df_plot["index"], y=df_trend[col], 
+                                         mode='lines', name=f"{name} (Trend)",
+                                         line=dict(color=color, width=3, shape='spline')))
+                
             fig.update_layout(plot_bgcolor="#fff", paper_bgcolor="#fff",
-                              font_family="Rajdhani", margin=dict(l=10,r=10,t=20,b=10))
+                              font_family="Rajdhani", margin=dict(l=10,r=10,t=20,b=10),
+                              xaxis_title="Query Sequence (#)", yaxis_title="RAGAS Score",
+                              hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
         with cb:
+            st.markdown("**Score Distribution**")
             fig2 = go.Figure()
             for col, col_color in zip(
                 ["faithfulness","answer_relevancy","context_precision"],
@@ -575,7 +595,8 @@ with tab_eval:
                     name=col.replace("_"," ").title(),
                     marker_color=col_color, boxpoints="all"))
             fig2.update_layout(plot_bgcolor="#fff", paper_bgcolor="#fff",
-                               font_family="Rajdhani", margin=dict(l=10,r=10,t=20,b=10))
+                               font_family="Rajdhani", margin=dict(l=10,r=10,t=20,b=10),
+                               yaxis_title="Score")
             st.plotly_chart(fig2, use_container_width=True)
 
         st.dataframe(df[["timestamp","question","faithfulness",
