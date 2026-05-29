@@ -108,22 +108,29 @@ def show_llm_modal():
     st.markdown('<p class="section-title">LLM Configuration</p>', unsafe_allow_html=True)
 
     provider = st.selectbox(
-        "Provider", ["groq", "huggingface"],
-        help="Groq is free and fast. Get an API key at console.groq.com"
+        "Provider", ["groq", "huggingface", "ollama"],
+        help="Groq is free and fast. Ollama runs locally for fully offline RAG."
     )
 
     if provider == "groq":
         model = st.selectbox("Model", GROQ_MODELS)
+    elif provider == "ollama":
+        from llm_provider import OLLAMA_MODELS
+        model = st.selectbox("Model", OLLAMA_MODELS)
     else:
         model = st.text_input("HuggingFace Model ID",
                               value="mistralai/Mistral-7B-Instruct-v0.2")
 
-    api_key = st.text_input(
-        "API Key",
-        type="password",
-        placeholder="Paste your API key here (starts with gsk_...)" if provider == "groq"
-                    else "Paste your HuggingFace token here"
-    )
+    if provider != "ollama":
+        api_key = st.text_input(
+            "API Key",
+            type="password",
+            placeholder="Paste your API key here (starts with gsk_...)" if provider == "groq"
+                        else "Paste your HuggingFace token here"
+        )
+    else:
+        api_key = "not-required"
+        st.info("Ensure the Ollama app is running locally on your machine.")
 
     if provider == "groq":
         st.caption("Get a free API key at console.groq.com")
@@ -131,7 +138,7 @@ def show_llm_modal():
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("Connect", type="primary", use_container_width=True):
-            if not api_key.strip():
+            if provider != "ollama" and not api_key.strip():
                 st.error("API key is required.")
             else:
                 with st.spinner("Connecting to LLM..."):
@@ -140,7 +147,7 @@ def show_llm_modal():
                         p.llm.initialize(
                             provider=provider,
                             model_name=model,
-                            api_key=api_key.strip()
+                            api_key=api_key.strip() if provider != "ollama" else None
                         )
                         p.multilingual.enabled = st.session_state.multilingual
                         st.session_state.llm_ready = True

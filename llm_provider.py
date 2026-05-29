@@ -24,6 +24,13 @@ TOGETHER_MODELS = [
     "meta-llama/Llama-3-8b-chat-hf",
 ]
 
+OLLAMA_MODELS = [
+    "llama3",
+    "mistral",
+    "gemma",
+    "phi3",
+]
+
 
 class LLMProvider:
     """
@@ -31,6 +38,7 @@ class LLMProvider:
     - Groq (free, fast, llama3 / mixtral)
     - HuggingFace Inference API (free tier)
     - Together AI (free credits)
+    - Ollama (local, offline)
     """
 
     def __init__(self):
@@ -44,6 +52,7 @@ class LLMProvider:
             model_name=model_name,
             temperature=CONFIG.llm.temperature,
             max_tokens=CONFIG.llm.max_tokens,
+            streaming=True,  # Enables token-by-token streaming
         )
         self._provider = "groq"
         logger.info(f"Groq LLM loaded: {model_name}")
@@ -58,6 +67,15 @@ class LLMProvider:
         )
         self._provider = "huggingface"
         logger.info(f"HuggingFace LLM loaded: {model_name}")
+
+    def _load_ollama(self, model_name: str):
+        from langchain_community.chat_models import ChatOllama
+        self._llm = ChatOllama(
+            model=model_name,
+            temperature=CONFIG.llm.temperature,
+        )
+        self._provider = "ollama"
+        logger.info(f"Ollama LLM loaded: {model_name}")
 
     def initialize(
         self,
@@ -80,6 +98,8 @@ class LLMProvider:
                 if not key:
                     raise ValueError("HuggingFace API key not provided.")
                 self._load_huggingface(model_name, key)
+            elif provider == "ollama":
+                self._load_ollama(model_name)
             else:
                 raise ValueError(f"Unknown provider: {provider}")
 
