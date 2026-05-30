@@ -423,6 +423,16 @@ class RAGPipeline:
             if eval_id in self._eval_results:
                 self._eval_results[eval_id] = result
 
+    def is_eval_pending(self, eval_id: str) -> bool:
+        """Return True if background evaluation for *eval_id* is actively running."""
+        if eval_id is None:
+            return False
+        with self._eval_lock:
+            if eval_id not in self._eval_results:
+                return False
+            slot = self._eval_results[eval_id]
+            return slot is not None and not isinstance(slot, EvaluationResult)
+
     def get_eval_result(self, eval_id: str) -> Optional[EvaluationResult]:
         """Return the evaluation result for *eval_id*, or ``None`` if still
         pending.  A completed result is removed from the internal dict to

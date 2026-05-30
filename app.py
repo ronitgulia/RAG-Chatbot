@@ -363,7 +363,7 @@ with tab_chat:
             with st.spinner("Computing evaluation scores..."):
                 while _time.monotonic() < deadline:
                     ev = p.get_eval_result(pending_id)
-                    if ev is not None:
+                    if ev is not None or not p.is_eval_pending(pending_id):
                         break
                     _time.sleep(0.25)
 
