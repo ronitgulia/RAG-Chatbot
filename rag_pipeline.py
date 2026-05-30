@@ -49,16 +49,33 @@ Answer:"""
 # Common English stopwords filtered out during key-term extraction so that
 # only meaningful, domain-relevant terms survive.
 _STOPWORDS: set = {
-    "about", "after", "again", "also", "answer", "based", "because", "before",
-    "being", "between", "called", "could", "different", "during", "each",
-    "example", "first", "following", "found", "given", "groups", "having",
-    "however", "include", "information", "known", "large", "listed", "making",
-    "might", "never", "number", "often", "other", "people", "possible",
-    "provide", "provided", "question", "rather", "result", "results",
-    "second", "several", "should", "simple", "since", "something", "source",
-    "still", "support", "system", "their", "there", "these", "thing",
-    "things", "those", "though", "through", "under", "using", "various",
-    "which", "while", "within", "without", "would",
+    # Articles, conjunctions, prepositions
+    "a", "an", "the", "and", "or", "but", "if", "because", "as", "until", "while",
+    "of", "at", "by", "for", "with", "about", "against", "between", "into",
+    "through", "during", "before", "after", "above", "below", "to", "from",
+    "up", "down", "in", "out", "on", "off", "over", "under", "again", "further",
+    "then", "once", "here", "there", "when", "where", "why", "how",
+    # Pronouns and determiners
+    "it", "its", "itself", "they", "them", "their", "theirs", "themselves",
+    "what", "which", "who", "whom", "this", "that", "these", "those",
+    "am", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "having", "do", "does", "did", "doing",
+    "would", "should", "could", "ought", "i", "you", "he", "she", "we",
+    "him", "her", "his", "hers", "himself", "herself", "myself", "yourself",
+    # Modifiers, quantifiers & adverbs
+    "all", "any", "both", "each", "few", "more", "most", "other", "some",
+    "such", "no", "nor", "not", "only", "own", "same", "so", "than",
+    "too", "very", "can", "will", "just", "don", "should", "now",
+    # Common conversational / assistant filler words
+    "also", "answer", "based", "called", "different", "example", "first",
+    "following", "found", "given", "groups", "however", "include", "information",
+    "known", "large", "listed", "making", "might", "never", "number", "often",
+    "people", "possible", "provide", "provided", "question", "rather", "result",
+    "results", "second", "several", "simple", "since", "something", "source",
+    "still", "support", "system", "thing", "things", "though", "using",
+    "various", "without", "according", "mentioned", "document", "documents",
+    "context", "excerpt", "stated", "described", "details", "summary",
+    "please", "note", "assistant", "user", "response", "regarding", "unfortunately",
 }
 
 
@@ -436,12 +453,17 @@ class RAGPipeline:
         "he", "she", "his", "her", "hers",
         "above", "previous", "earlier", "before",
         "same", "also", "too", "again", "more",
+        "why", "how", "elaborate", "explain", "expand",
     }
 
     @staticmethod
     def _looks_like_followup(question: str) -> bool:
-        """Return True if the question appears to reference prior context."""
-        words = set(question.lower().split())
+        """Return True if the question appears to reference prior context.
+
+        Uses regex word-boundary matching so trailing punctuation (e.g. 'What is it?')
+        does not prevent detecting the cue word.
+        """
+        words = set(re.findall(r"\b[a-zA-Z]+\b", question.lower()))
         return bool(words & RAGPipeline._CONTEXT_CUE_WORDS)
 
     def _get_last_assistant_message(self) -> Optional[str]:
@@ -453,25 +475,28 @@ class RAGPipeline:
 
     @staticmethod
     def _extract_key_terms(text: str, max_terms: int = 6) -> List[str]:
-        """Extract salient terms from *text* using cheap regex heuristics.
+        """Extract salient terms from *text* using regex heuristics.
 
-        Priority order: capitalised phrases → quoted terms → long words.
-        Common stopwords are filtered out.
+        Priority order: capitalised phrases → quoted terms → long domain words.
+        Contractions and common stopwords are filtered out.
         """
         # Capitalised multi-word phrases (proper nouns, titles)
         caps = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b", text)
-        # Quoted terms
-        quoted = re.findall(r'"([^"]+)"', text) + re.findall(r"'([^']+)'", text)
+        # Double-quoted terms and standalone single-quoted terms (avoiding contraction apostrophes)
+        double_quoted = re.findall(r'"([^"\n]+)"', text)
+        single_quoted = re.findall(r"(?:^|[\s({\[])'([^'\n]+)'(?:[\s)}\].,!?;:]|$)", text)
+        quoted = double_quoted + single_quoted
         # Longer words (likely domain-specific)
         words = re.findall(r"\b[a-zA-Z]{6,}\b", text)
 
         seen: set = set()
         result: List[str] = []
         for term in caps + quoted + words:
-            key = term.lower().strip()
-            if key not in seen and key not in _STOPWORDS:
+            cleaned = term.strip().strip("'\"")
+            key = cleaned.lower()
+            if key and key not in seen and key not in _STOPWORDS:
                 seen.add(key)
-                result.append(term)
+                result.append(cleaned)
             if len(result) >= max_terms:
                 break
         return result
@@ -480,7 +505,7 @@ class RAGPipeline:
         """Contextualise follow-up questions using chat history.
 
         Uses a zero-cost rule-based heuristic instead of an LLM call:
-        extracts key terms from the last assistant response and prepends
+        extracts key terms from the recent conversation context and prepends
         them to the query, giving the retriever the extra keywords it
         needs without burning an API call or risking rate limits.
         """
@@ -491,11 +516,22 @@ class RAGPipeline:
         if not self._looks_like_followup(question):
             return question
 
+        context_sources = []
         last_response = self._get_last_assistant_message()
-        if not last_response:
+        if last_response:
+            context_sources.append(last_response)
+
+        # Also inspect previous user question if available
+        history = self.memory.get_history()
+        user_msgs = [m["content"] for m in history if m.get("role") == "user"]
+        if user_msgs:
+            context_sources.append(user_msgs[-1])
+
+        combined_text = " ".join(context_sources)
+        if not combined_text.strip():
             return question
 
-        key_terms = self._extract_key_terms(last_response, max_terms=6)
+        key_terms = self._extract_key_terms(combined_text, max_terms=6)
         if not key_terms:
             return question
 
