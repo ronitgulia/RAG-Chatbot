@@ -119,6 +119,7 @@ import types as _types
 from rag_pipeline import RAGPipeline as _RP
 p._run_eval_background = _types.MethodType(_RP._run_eval_background, p)
 p.get_eval_result       = _types.MethodType(_RP.get_eval_result, p)
+p.is_eval_pending       = _types.MethodType(_RP.is_eval_pending, p)
 
 print(f"  {GREEN}Pipeline shell ready{RESET} — evaluator wired to real heuristic logic")
 
@@ -298,6 +299,54 @@ check("Format history works",
       "User: How are you?" in mem.format_history(), "format ok")
 mem.clear()
 check("Clear resets to 0", len(mem) == 0)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 7: is_eval_pending & immediate polling termination on error
+# ─────────────────────────────────────────────────────────────────────────────
+
+section("TEST 7 — is_eval_pending state transitions and polling breakout")
+
+_PEND_SENTINEL = object()
+eid_test = "pending-breakout-01"
+
+check("Unknown eval_id is not pending", not p.is_eval_pending(eid_test))
+
+with p._eval_lock:
+    p._eval_results[eid_test] = _PEND_SENTINEL
+check("Sentinel slot is pending", p.is_eval_pending(eid_test))
+
+with p._eval_lock:
+    p._eval_results[eid_test] = None  # failed in background
+check("Failed slot (None) is not pending", not p.is_eval_pending(eid_test))
+
+# Verify polling breakout loop doesn't spin
+poll_loops = 0
+deadline = time.monotonic() + 5.0
+while time.monotonic() < deadline:
+    poll_loops += 1
+    res = p.get_eval_result(eid_test)
+    if res is not None or not p.is_eval_pending(eid_test):
+        break
+    time.sleep(0.05)
+
+check("Polling loop broke out on first iteration (no hang)", poll_loops == 1, f"loops={poll_loops}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 8: Query rewrite heuristics (follow-up detection & contraction safety)
+# ─────────────────────────────────────────────────────────────────────────────
+
+section("TEST 8 — Query rewrite heuristics (punctuation & contraction safety)")
+
+check("What is it? recognized as followup", _RP._looks_like_followup("What is it?"))
+check("Tell me more. recognized as followup", _RP._looks_like_followup("Tell me more."))
+check("Can you explain that? recognized as followup", _RP._looks_like_followup("Can you explain that?"))
+check("What is photosynthesis? NOT recognized as followup", not _RP._looks_like_followup("What is photosynthesis?"))
+
+sample_text = "Don't worry, it's fine. The 'Transformer' architecture uses self-attention."
+terms = _RP._extract_key_terms(sample_text, max_terms=6)
+lower_terms = [t.lower() for t in terms]
+check("Contractions not matched as single quotes", "t worry, it" not in lower_terms)
+check("Quoted domain term extracted", "Transformer" in terms, f"terms={terms}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FINAL SUMMARY

@@ -139,6 +139,16 @@ class EvalCore:
             if eval_id in self._eval_results:
                 self._eval_results[eval_id] = result
 
+    # ── mirrors RAGPipeline.is_eval_pending ─────────────────────────────
+    def is_eval_pending(self, eval_id) -> bool:
+        if eval_id is None:
+            return False
+        with self._eval_lock:
+            if eval_id not in self._eval_results:
+                return False
+            slot = self._eval_results[eval_id]
+            return slot is not None and not isinstance(slot, EvaluationResult)
+
     # ── mirrors RAGPipeline.get_eval_result ───────────────────────────────
     def get_eval_result(self, eval_id) -> Optional[EvaluationResult]:
         if eval_id is None:
@@ -211,6 +221,71 @@ def hybrid_rrf(dense, sparse, top_k=5, alpha=0.5, rrf_k=60):
         {**content_map[key], "rrf_score": score, "search_type": "hybrid"}
         for key, score in ranked
     ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+#  QueryRewriteCore — copied from rag_pipeline.py                            #
+# ═══════════════════════════════════════════════════════════════════════════ #
+
+import re
+
+_STOPWORDS: set = {
+    "a", "an", "the", "and", "or", "but", "if", "because", "as", "until", "while",
+    "of", "at", "by", "for", "with", "about", "against", "between", "into",
+    "through", "during", "before", "after", "above", "below", "to", "from",
+    "up", "down", "in", "out", "on", "off", "over", "under", "again", "further",
+    "then", "once", "here", "there", "when", "where", "why", "how",
+    "it", "its", "itself", "they", "them", "their", "theirs", "themselves",
+    "what", "which", "who", "whom", "this", "that", "these", "those",
+    "am", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "having", "do", "does", "did", "doing",
+    "would", "should", "could", "ought", "i", "you", "he", "she", "we",
+    "him", "her", "his", "hers", "himself", "herself", "myself", "yourself",
+    "all", "any", "both", "each", "few", "more", "most", "other", "some",
+    "such", "no", "nor", "not", "only", "own", "same", "so", "than",
+    "too", "very", "can", "will", "just", "don", "should", "now",
+    "also", "answer", "based", "called", "different", "example", "first",
+    "following", "found", "given", "groups", "however", "include", "information",
+    "known", "large", "listed", "making", "might", "never", "number", "often",
+    "people", "possible", "provide", "provided", "question", "rather", "result",
+    "results", "second", "several", "simple", "since", "something", "source",
+    "still", "support", "system", "thing", "things", "though", "using",
+    "various", "without", "according", "mentioned", "document", "documents",
+    "context", "excerpt", "stated", "described", "details", "summary",
+    "please", "note", "assistant", "user", "response", "regarding", "unfortunately",
+}
+
+_CONTEXT_CUE_WORDS = {
+    "it", "its", "they", "them", "their", "theirs",
+    "this", "that", "these", "those",
+    "he", "she", "his", "her", "hers",
+    "above", "previous", "earlier", "before",
+    "same", "also", "too", "again", "more",
+    "why", "how", "elaborate", "explain", "expand",
+}
+
+def looks_like_followup(question: str) -> bool:
+    words = set(re.findall(r"\b[a-zA-Z]+\b", question.lower()))
+    return bool(words & _CONTEXT_CUE_WORDS)
+
+def extract_key_terms(text: str, max_terms: int = 6) -> List[str]:
+    caps = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b", text)
+    double_quoted = re.findall(r'"([^"\n]+)"', text)
+    single_quoted = re.findall(r"(?:^|[\s({\[])'([^'\n]+)'(?:[\s)}\].,!?;:]|$)", text)
+    quoted = double_quoted + single_quoted
+    words = re.findall(r"\b[a-zA-Z]{6,}\b", text)
+
+    seen: set = set()
+    result: List[str] = []
+    for term in caps + quoted + words:
+        cleaned = term.strip().strip("'\"")
+        key = cleaned.lower()
+        if key and key not in seen and key not in _STOPWORDS:
+            seen.add(key)
+            result.append(cleaned)
+        if len(result) >= max_terms:
+            break
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #
@@ -421,6 +496,52 @@ class TestGetEvalResultContract(unittest.TestCase):
         self.assertIsNone(result,
             "A pending slot must not be returned as a result")
 
+    def test_is_eval_pending_behavior(self):
+        core = self._core()
+        eid = "pending-check-01"
+        _PENDING = object()
+
+        # Unknown id is not pending
+        self.assertFalse(core.is_eval_pending(eid))
+        self.assertFalse(core.is_eval_pending(None))
+
+        # Stored sentinel means pending
+        with core._eval_lock:
+            core._eval_results[eid] = _PENDING
+        self.assertTrue(core.is_eval_pending(eid))
+
+        # Completed result means not pending
+        with core._eval_lock:
+            core._eval_results[eid] = EvaluationResult(overall_score=0.9)
+        self.assertFalse(core.is_eval_pending(eid))
+
+        # Harvested/deleted means not pending
+        core.get_eval_result(eid)
+        self.assertFalse(core.is_eval_pending(eid))
+
+    def test_failed_eval_polling_terminates_immediately(self):
+        """Simulate app.py polling loop when background evaluation fails."""
+        core = self._core()
+        eid = "failed-eval-01"
+        # Simulate worker setting failure (None)
+        with core._eval_lock:
+            core._eval_results[eid] = None
+
+        iterations = 0
+        ev = None
+        # Loop exactly matching app.py
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            iterations += 1
+            ev = core.get_eval_result(eid)
+            if ev is not None or not core.is_eval_pending(eid):
+                break
+            time.sleep(0.05)
+
+        # Must terminate on the very first iteration without sleeping
+        self.assertEqual(iterations, 1)
+        self.assertIsNone(ev)
+
 
 class TestConversationMemory(unittest.TestCase):
     """Existing ConversationMemory tests — all must still pass."""
@@ -500,6 +621,43 @@ class TestVectorStoreRRF(unittest.TestCase):
         for r in results:
             self.assertGreater(r["rrf_score"], 0,
                 "RRF scores must always be positive")
+
+
+class TestQueryRewriteHeuristics(unittest.TestCase):
+    """Unit tests for rule-based query rewrite heuristics."""
+
+    def test_looks_like_followup_handles_punctuation(self):
+        """Punctuation directly attached to cue words must not prevent detection."""
+        self.assertTrue(looks_like_followup("What is it?"))
+        self.assertTrue(looks_like_followup("Tell me more."))
+        self.assertTrue(looks_like_followup("Can you explain that?"))
+        self.assertTrue(looks_like_followup("What about these!"))
+        self.assertTrue(looks_like_followup("Who was he?"))
+        self.assertTrue(looks_like_followup("Could you elaborate?"))
+
+    def test_looks_like_followup_ignores_standalone_queries(self):
+        """Unambiguous new questions must not be flagged as follow-ups."""
+        self.assertFalse(looks_like_followup("What is photosynthesis?"))
+        self.assertFalse(looks_like_followup("Give an overview of transformers"))
+        self.assertFalse(looks_like_followup("Define artificial intelligence"))
+
+    def test_extract_key_terms_contraction_safety(self):
+        """Contractions with apostrophes must not be treated as single-quoted terms."""
+        text = "Don't worry, it's fine. The 'Transformer' architecture uses self-attention."
+        terms = extract_key_terms(text, max_terms=6)
+        lower_terms = [t.lower() for t in terms]
+        self.assertNotIn("t worry, it", lower_terms)
+        self.assertIn("Transformer", terms)
+
+    def test_extract_key_terms_filters_stopwords(self):
+        """Conversational filler words and English stopwords should be excluded."""
+        text = "According to the mentioned document, Neural Networks process data."
+        terms = extract_key_terms(text, max_terms=6)
+        lower_terms = [t.lower() for t in terms]
+        self.assertNotIn("according", lower_terms)
+        self.assertNotIn("document", lower_terms)
+        self.assertNotIn("the", lower_terms)
+        self.assertTrue(any("neural" in t.lower() or "networks" in t.lower() for t in terms))
 
 
 if __name__ == "__main__":
