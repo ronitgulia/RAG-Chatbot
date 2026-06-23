@@ -415,13 +415,14 @@ class RAGPipeline:
             return None
         with self._eval_lock:
             slot = self._eval_results.get(eval_id)
-            # Sentinel means the background thread hasn't written yet.
-            if slot is None or isinstance(slot, type(object())):
-                # Distinguish: key absent → unknown id; key present with
-                # non-EvaluationResult value → still running.
-                if eval_id not in self._eval_results:
-                    return None
-                return None  # still running
+            # Key absent → unknown id.
+            if eval_id not in self._eval_results:
+                return None
+            # Only an EvaluationResult means the thread finished successfully.
+            # Anything else (sentinel object, None from a failed eval) means
+            # still running or failed — do not harvest yet.
+            if not isinstance(slot, EvaluationResult):
+                return None
             # Concrete result available — harvest and free.
             del self._eval_results[eval_id]
             return slot
