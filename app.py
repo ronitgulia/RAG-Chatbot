@@ -352,6 +352,21 @@ with tab_chat:
             )
 
         ev = result.get("evaluation")
+
+        # If the heuristic evaluator didn't finish within the 2-second join
+        # window (e.g. RAGAS is running), poll for up to 10 more seconds so
+        # we don't permanently lose the metrics.
+        pending_id = result.get("eval_id")
+        if ev is None and pending_id:
+            import time as _time
+            deadline = _time.monotonic() + 10.0
+            with st.spinner("Computing evaluation scores..."):
+                while _time.monotonic() < deadline:
+                    ev = p.get_eval_result(pending_id)
+                    if ev is not None:
+                        break
+                    _time.sleep(0.25)
+
         st.session_state.messages.append({
             "role": "assistant",
             "content": result["answer"],
@@ -362,7 +377,7 @@ with tab_chat:
             "retrieval_mode": result.get("retrieval_mode", ""),
         })
 
-        if ev:
+        if ev is not None:
             st.session_state.eval_history.append({
                 "question": user_input,
                 "answer": result["answer"],

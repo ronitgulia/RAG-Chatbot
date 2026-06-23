@@ -6,6 +6,7 @@ import hashlib
 import logging
 import re
 import threading
+import time
 import uuid
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
@@ -329,20 +330,35 @@ class RAGPipeline:
         self.memory.add("user", question)
         self.memory.add("assistant", answer)
 
-        # 9. Evaluate — fire-and-forget in a background thread so the
-        #    answer is returned to the user immediately.
+        # 9. Evaluate — run in a background thread and join with a short
+        #    timeout so fast heuristic scores are returned inline while slow
+        #    RAGAS calls don't block the user.
+        eval_result: Optional[EvaluationResult] = None
         eval_id: Optional[str] = None
         if evaluate and retrieved:
             eval_id = uuid.uuid4().hex[:8]
             contexts_texts = [c["page_content"] for c in retrieved]
+            # Use a sentinel object so we can tell "still running" from
+            # "finished with None" once the lock is released.
+            _PENDING = object()
             with self._eval_lock:
-                self._eval_results[eval_id] = None  # placeholder
+                self._eval_results[eval_id] = _PENDING
             t = threading.Thread(
                 target=self._run_eval_background,
                 args=(eval_id, english_query, answer, contexts_texts),
                 daemon=True,
             )
             t.start()
+            # Give the thread up to 2 seconds — enough for the heuristic
+            # evaluator (< 10 ms) but not long enough to block on RAGAS.
+            t.join(timeout=2.0)
+            # Harvest the result if the thread finished within the window.
+            with self._eval_lock:
+                finished = self._eval_results.get(eval_id)
+                if finished is not _PENDING and finished is not None:
+                    eval_result = finished
+                    del self._eval_results[eval_id]  # free memory immediately
+                    eval_id = None  # no need for caller to poll
 
         # 10. Compile sources
         sources = list({
@@ -353,8 +369,8 @@ class RAGPipeline:
             "answer": answer,
             "sources": sources,
             "chunks": retrieved,
-            "evaluation": None,
-            "eval_id": eval_id,
+            "evaluation": eval_result,   # populated inline for fast evals
+            "eval_id": eval_id,          # non-None only when still pending
             "query_language": detected_lang,
             "lang_confidence": lang_confidence,
             "retrieval_mode": search_mode,
@@ -372,28 +388,43 @@ class RAGPipeline:
     def _run_eval_background(
         self, eval_id: str, question: str, answer: str, contexts: List[str]
     ):
-        """Run evaluation in a daemon thread and stash the result."""
+        """Run evaluation in a daemon thread and stash the result.
+
+        The slot in ``_eval_results`` is pre-populated with a sentinel object
+        by the caller; we overwrite it with the real result (or ``None`` on
+        failure) so that ``get_eval_result`` can distinguish *still running*
+        from *completed with no result*.
+        """
         try:
             result = self.evaluator.evaluate(question, answer, contexts)
         except Exception as e:
             logger.warning(f"Background eval failed: {e}")
             result = None
         with self._eval_lock:
-            self._eval_results[eval_id] = result
+            # Only write if the slot still belongs to us (caller may have
+            # already harvested and deleted it after the join timeout).
+            if eval_id in self._eval_results:
+                self._eval_results[eval_id] = result
 
     def get_eval_result(self, eval_id: str) -> Optional[EvaluationResult]:
-        """Return the evaluation result for *eval_id*, or None if still pending.
-
-        A completed result is removed from the internal dict to free memory.
+        """Return the evaluation result for *eval_id*, or ``None`` if still
+        pending.  A completed result is removed from the internal dict to
+        prevent unbounded memory growth.
         """
         if eval_id is None:
             return None
         with self._eval_lock:
-            result = self._eval_results.get(eval_id)
-            if result is not None:
-                del self._eval_results[eval_id]
-                return result
-        return None  # still running
+            slot = self._eval_results.get(eval_id)
+            # Sentinel means the background thread hasn't written yet.
+            if slot is None or isinstance(slot, type(object())):
+                # Distinguish: key absent → unknown id; key present with
+                # non-EvaluationResult value → still running.
+                if eval_id not in self._eval_results:
+                    return None
+                return None  # still running
+            # Concrete result available — harvest and free.
+            del self._eval_results[eval_id]
+            return slot
 
     # ------------------------------------------------------------------ #
     #  Lightweight query rewrite (no LLM call)                             #
