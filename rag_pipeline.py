@@ -418,12 +418,10 @@ class RAGPipeline:
             # Key absent → unknown id.
             if eval_id not in self._eval_results:
                 return None
-            # Only an EvaluationResult means the thread finished successfully.
-            # Anything else (sentinel object, None from a failed eval) means
-            # still running or failed — do not harvest yet.
-            if not isinstance(slot, EvaluationResult):
+            # If the slot contains a sentinel object (not None, not EvaluationResult), it is still pending.
+            if slot is not None and not isinstance(slot, EvaluationResult):
                 return None
-            # Concrete result available — harvest and free.
+            # Concrete result available or evaluation failed (None) — harvest and free.
             del self._eval_results[eval_id]
             return slot
 
