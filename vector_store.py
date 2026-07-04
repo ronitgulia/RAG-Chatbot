@@ -254,6 +254,14 @@ class VectorStoreManager:
                     # Fallback for older langchain versions
                     self._faiss_index = FAISS.load_local("faiss_index", lc_emb)
                     
+        elif self._store_type == "chroma":
+            from langchain_community.vectorstores import Chroma
+            lc_emb = self.embedding_model.get_langchain_embeddings()
+            self._chroma_db = Chroma(
+                persist_directory=CONFIG.vector_store.persist_directory,
+                embedding_function=lc_emb
+            )
+                    
         self._build_bm25(texts)
         logger.info(f"Vector store loaded from {path} ({len(self._documents)} chunks).")
         return True
