@@ -419,11 +419,12 @@ with tab_docs:
                     if result["success"]:
                         success_count += 1
                         total_chunks += result.get("chunks_added", 0)
-                        st.session_state.doc_metadata.append({
-                            "name": file.name,
-                            "size_kb": round(file.size / 1024, 1),
-                            "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        })
+                        if result.get("chunks_added", 0) > 0:
+                            st.session_state.doc_metadata.append({
+                                "name": file.name,
+                                "size_kb": round(file.size / 1024, 1),
+                                "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            })
                     if result.get("errors"):
                         all_errors.extend(result["errors"])
                         
@@ -486,11 +487,12 @@ with tab_docs:
                         for doc in docs:
                             src = doc.get("metadata", {}).get("source", "Unknown URL")
                             size_kb = round(len(doc.get("page_content", "")) / 1024, 1)
-                            st.session_state.doc_metadata.append({
-                                "name": src,
-                                "size_kb": size_kb,
-                                "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                            })
+                            if r.get("chunks_added", 0) > 0:
+                                st.session_state.doc_metadata.append({
+                                    "name": src,
+                                    "size_kb": size_kb,
+                                    "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                })
                     else:
                         st.error(r["message"])
 
@@ -526,11 +528,12 @@ with tab_docs:
                     
                     if r["success"]:
                         st.success(f"Indexed {r['chunks_added']} chunks from Wikipedia: {title}")
-                        st.session_state.doc_metadata.append({
-                            "name": url,
-                            "size_kb": round(len(content) / 1024, 1),
-                            "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        })
+                        if r.get("chunks_added", 0) > 0:
+                            st.session_state.doc_metadata.append({
+                                "name": url,
+                                "size_kb": round(len(content) / 1024, 1),
+                                "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            })
                         
                         p = get_pipeline()
                         if p.llm.is_ready:

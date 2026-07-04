@@ -59,12 +59,14 @@ class LLMProvider:
 
     def _load_huggingface(self, model_name: str, api_key: str):
         from langchain_community.llms import HuggingFaceEndpoint
-        self._llm = HuggingFaceEndpoint(
+        from langchain_community.chat_models.huggingface import ChatHuggingFace
+        llm = HuggingFaceEndpoint(
             repo_id=model_name,
             huggingfacehub_api_token=api_key,
             temperature=CONFIG.llm.temperature,
             max_new_tokens=CONFIG.llm.max_tokens,
         )
+        self._llm = ChatHuggingFace(llm=llm)
         self._provider = "huggingface"
         logger.info(f"HuggingFace LLM loaded: {model_name}")
 

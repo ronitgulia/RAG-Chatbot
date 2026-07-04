@@ -43,21 +43,32 @@ def export_as_csv(messages: List[Dict[str, Any]]) -> bytes:
     )
     writer.writeheader()
     for msg in messages:
+        ev = msg.get("eval")
+        eval_score = ev.overall_score if ev else ""
         writer.writerow({
             "timestamp": msg.get("timestamp", ""),
             "role": msg.get("role", ""),
             "content": msg.get("content", ""),
-            "eval_score": msg.get("eval_score", ""),
+            "eval_score": eval_score,
         })
     return output.getvalue().encode("utf-8")
 
 
 def export_as_json(messages: List[Dict[str, Any]]) -> bytes:
     """Export conversation as JSON."""
+    from dataclasses import asdict, is_dataclass
+    
+    class DataclassEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if is_dataclass(obj):
+                return asdict(obj)
+            return super().default(obj)
+            
     return json.dumps(
         {"exported_at": datetime.now().isoformat(), "messages": messages},
         ensure_ascii=False,
         indent=2,
+        cls=DataclassEncoder
     ).encode("utf-8")
 
 
