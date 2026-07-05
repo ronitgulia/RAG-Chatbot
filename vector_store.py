@@ -104,10 +104,16 @@ class VectorStoreManager:
             persist_directory=CONFIG.vector_store.persist_directory,
         )
 
+    @staticmethod
+    def _tokenize(text: str) -> List[str]:
+        """Normalize and tokenize text into words stripped of trailing/leading punctuation."""
+        import re
+        return re.findall(r"\b\w+\b", text.lower())
+
     def _build_bm25(self, texts: List[str]) -> None:
         try:
             from rank_bm25 import BM25Okapi
-            tokenized = [t.lower().split() for t in texts]
+            tokenized = [self._tokenize(t) for t in texts]
             self._bm25 = BM25Okapi(tokenized)
         except ImportError:
             logger.warning("rank_bm25 not installed; BM25 disabled.")
@@ -118,45 +124,51 @@ class VectorStoreManager:
     # ------------------------------------------------------------------ #
 
     def dense_search(
-        self, query: str, top_k: int = None
+        self, query: str, top_k: int = None, score_threshold: float = None
     ) -> List[Dict[str, Any]]:
         """Pure dense (embedding-based) similarity search."""
         k = top_k or CONFIG.vector_store.top_k
+        results = []
         if self._store_type == "faiss" and self._faiss_index:
-            results = self._faiss_index.similarity_search_with_score(query, k=k)
-            return [
+            raw = self._faiss_index.similarity_search_with_score(query, k=k)
+            results = [
                 {
                     "page_content": doc.page_content,
                     "metadata": doc.metadata,
                     "score": float(score),
                     "search_type": "dense",
                 }
-                for doc, score in results
+                for doc, score in raw
             ]
         elif self._store_type == "chroma" and self._chroma_db:
-            results = self._chroma_db.similarity_search_with_score(query, k=k)
-            return [
+            raw = self._chroma_db.similarity_search_with_score(query, k=k)
+            results = [
                 {
                     "page_content": doc.page_content,
                     "metadata": doc.metadata,
                     "score": float(score),
                     "search_type": "dense",
                 }
-                for doc, score in results
+                for doc, score in raw
             ]
-        return []
+
+        if score_threshold is not None:
+            results = [r for r in results if r["score"] >= score_threshold]
+        return results
 
     def sparse_search(
-        self, query: str, top_k: int = None
+        self, query: str, top_k: int = None, score_threshold: float = None
     ) -> List[Dict[str, Any]]:
-        """BM25 keyword-based sparse search."""
+        """BM25 keyword-based sparse search with normalized tokenization."""
         if self._bm25 is None or not self._documents:
             return []
         k = top_k or CONFIG.vector_store.top_k
-        tokens = query.lower().split()
+        tokens = self._tokenize(query)
+        if not tokens:
+            return []
         scores = self._bm25.get_scores(tokens)
         ranked_indices = np.argsort(scores)[::-1][:k]
-        return [
+        results = [
             {
                 "page_content": self._documents[i]["page_content"],
                 "metadata": self._documents[i]["metadata"],
@@ -166,9 +178,12 @@ class VectorStoreManager:
             for i in ranked_indices
             if scores[i] > 0
         ]
+        if score_threshold is not None:
+            results = [r for r in results if r["score"] >= score_threshold]
+        return results
 
     def hybrid_search(
-        self, query: str, top_k: int = None, alpha: float = None
+        self, query: str, top_k: int = None, alpha: float = None, score_threshold: float = None
     ) -> List[Dict[str, Any]]:
         """
         Hybrid retrieval: Reciprocal Rank Fusion of dense + sparse results.
@@ -194,23 +209,26 @@ class VectorStoreManager:
         add_rrf(sparse, 1 - alpha)
 
         ranked = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
-        return [
+        results = [
             {**content_map[key], "rrf_score": score, "search_type": "hybrid"}
             for key, score in ranked
         ]
+        if score_threshold is not None:
+            results = [r for r in results if r["rrf_score"] >= score_threshold]
+        return results
 
     def retrieve(
-        self, query: str, top_k: int = None, mode: str = "hybrid"
+        self, query: str, top_k: int = None, mode: str = "hybrid", score_threshold: float = None
     ) -> List[Dict[str, Any]]:
         """Main retrieval entry point."""
         if not self._documents:
             return []
         if mode == "dense":
-            return self.dense_search(query, top_k)
+            return self.dense_search(query, top_k, score_threshold=score_threshold)
         elif mode == "sparse":
-            return self.sparse_search(query, top_k)
+            return self.sparse_search(query, top_k, score_threshold=score_threshold)
         else:
-            return self.hybrid_search(query, top_k)
+            return self.hybrid_search(query, top_k, score_threshold=score_threshold)
 
     # ------------------------------------------------------------------ #
     #  Persistence                                                         #
