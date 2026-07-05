@@ -29,7 +29,7 @@ class RAGEvaluator:
 
     def __init__(self, use_ragas: bool = True):
         self.use_ragas = use_ragas
-        self._ragas_available = self._check_ragas()
+        self._ragas_available = self._check_ragas() if use_ragas else False
 
     @staticmethod
     def _check_ragas() -> bool:

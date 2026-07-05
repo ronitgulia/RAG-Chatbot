@@ -102,11 +102,12 @@ def export_as_pdf(messages: List[Dict[str, Any]], title: str = "Chat Export") ->
             pdf.set_draw_color(220, 220, 220)
             pdf.cell(0, 7, role, ln=True, fill=True)
             pdf.set_font("Helvetica", "", 9)
-            pdf.multi_cell(0, 5, content, border=0)
+            safe_content = content.encode("latin-1", "replace").decode("latin-1")
+            pdf.multi_cell(0, 5, safe_content, border=0)
             pdf.ln(3)
 
         return bytes(pdf.output())
 
-    except ImportError:
-        logger.warning("fpdf2 not installed; falling back to TXT.")
+    except Exception as e:
+        logger.warning(f"PDF export failed ({e}); falling back to TXT.")
         return export_as_txt(messages, title)

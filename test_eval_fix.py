@@ -660,5 +660,60 @@ class TestQueryRewriteHeuristics(unittest.TestCase):
         self.assertTrue(any("neural" in t.lower() or "networks" in t.lower() for t in terms))
 
 
+class TestSeniorEngineeringUpgrades(unittest.TestCase):
+    """Regression and unit tests for senior engineering additions."""
+
+    def test_vector_store_tokenize_normalizes_punctuation(self):
+        """BM25 tokenization must strip punctuation and lowercase words."""
+        from vector_store import VectorStoreManager
+        tokens = VectorStoreManager._tokenize("What is RAG? Efficient retrieval!")
+        self.assertEqual(tokens, ["what", "is", "rag", "efficient", "retrieval"])
+
+    def test_cached_langchain_embeddings_adapter(self):
+        """CachedLangChainEmbeddings should delegate to EmbeddingModel and return float lists."""
+        from embeddings import CachedLangChainEmbeddings
+        class DummyModel:
+            def embed_texts(self, texts):
+                import numpy as np
+                return np.array([[0.1, 0.2, 0.3]] * len(texts))
+            def embed_query(self, text):
+                import numpy as np
+                return np.array([0.1, 0.2, 0.3])
+
+        adapter = CachedLangChainEmbeddings(DummyModel())
+        docs_res = adapter.embed_documents(["hello world", "test"])
+        self.assertEqual(len(docs_res), 2)
+        self.assertIsInstance(docs_res[0], list)
+        self.assertAlmostEqual(docs_res[0][0], 0.1)
+
+        query_res = adapter.embed_query("query")
+        self.assertIsInstance(query_res, list)
+        self.assertAlmostEqual(query_res[0], 0.1)
+
+    def test_heuristic_context_recall_calculation(self):
+        """evaluate_heuristic must compute context_recall when ground_truth is provided."""
+        from evaluation import RAGEvaluator
+        ev = RAGEvaluator(use_ragas=False)
+        res = ev.evaluate(
+            question="What does RAG combine?",
+            answer="RAG combines retrieval and generation.",
+            contexts=["RAG combines document retrieval with text generation."],
+            ground_truth="RAG combines retrieval with generation."
+        )
+        self.assertGreater(res.context_recall, 0.0)
+        self.assertTrue(res.details.get("has_ground_truth"))
+
+    def test_export_pdf_unicode_resilience(self):
+        """PDF export must not crash on non-Latin Unicode characters or emojis."""
+        from export_utils import export_as_pdf
+        messages = [
+            {"role": "user", "content": "Hello — this has an em-dash and emoji 🚀 and Hindi: नमस्ते"},
+            {"role": "assistant", "content": "Responding with quotes: “smart quotes” and ‘apostrophe’"}
+        ]
+        pdf_bytes = export_as_pdf(messages)
+        self.assertIsInstance(pdf_bytes, bytes)
+        self.assertGreater(len(pdf_bytes), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
