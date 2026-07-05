@@ -113,10 +113,12 @@ class RAGEvaluator:
         question: str,
         answer: str,
         contexts: List[str],
+        ground_truth: Optional[str] = None,
     ) -> EvaluationResult:
         """
         Lightweight heuristic scoring (no external API calls).
         Suitable when RAGAS or an LLM judge is not available.
+        Computes context recall when ground_truth is provided.
         """
         import re
 
@@ -138,15 +140,25 @@ class RAGEvaluator:
         ctx_scores = [word_overlap(question, c) for c in contexts]
         context_precision = round(sum(ctx_scores) / max(len(ctx_scores), 1), 3)
 
-        overall = round((faithfulness + answer_relevancy + context_precision) / 3, 3)
+        # Context recall: ground truth words appearing in contexts (if ground truth supplied)
+        context_recall = 0.0
+        if ground_truth:
+            context_recall = round(min(1.0, word_overlap(ground_truth, combined_ctx) * 2), 3)
+            overall = round((faithfulness + answer_relevancy + context_precision + context_recall) / 4, 3)
+        else:
+            overall = round((faithfulness + answer_relevancy + context_precision) / 3, 3)
+
+        from config import CONFIG
+        min_pass = getattr(CONFIG.evaluation, "faithfulness_threshold", 0.5)
 
         return EvaluationResult(
             faithfulness=round(faithfulness, 3),
             answer_relevancy=round(answer_relevancy, 3),
             context_precision=round(context_precision, 3),
+            context_recall=context_recall,
             overall_score=overall,
-            passed=overall >= 0.5,
-            details={"method": "heuristic"},
+            passed=overall >= min_pass,
+            details={"method": "heuristic", "has_ground_truth": bool(ground_truth)},
         )
 
     # ------------------------------------------------------------------ #
@@ -162,7 +174,7 @@ class RAGEvaluator:
     ) -> EvaluationResult:
         if self.use_ragas and self._ragas_available:
             return self.evaluate_with_ragas(question, answer, contexts, ground_truth)
-        return self.evaluate_heuristic(question, answer, contexts)
+        return self.evaluate_heuristic(question, answer, contexts, ground_truth=ground_truth)
 
 
 # ------------------------------------------------------------------ #
