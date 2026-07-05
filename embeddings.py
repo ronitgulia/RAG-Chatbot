@@ -18,6 +18,26 @@ logger = logging.getLogger(__name__)
 _EMBED_CACHE_MAX_SIZE: int = 512
 
 
+class CachedLangChainEmbeddings:
+    """LangChain-compatible Embeddings adapter that routes all vectorstore
+    embedding calls through EmbeddingModel's per-instance SHA-256 LRU cache.
+    """
+
+    def __init__(self, embedding_model: "EmbeddingModel"):
+        self._embedding_model = embedding_model
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        vecs = self._embedding_model.embed_texts(texts)
+        return [v.tolist() for v in vecs]
+
+    def embed_query(self, text: str) -> List[float]:
+        vec = self._embedding_model.embed_query(text)
+        return vec.tolist()
+
+    def __call__(self, text: str) -> List[float]:
+        return self.embed_query(text)
+
+
 class EmbeddingModel:
     """
     Wraps sentence-transformers for free, local embedding generation.
@@ -44,14 +64,9 @@ class EmbeddingModel:
             logger.info("Sentence-transformers model loaded.")
 
     def get_langchain_embeddings(self):
-        """Return a LangChain-compatible embedding object."""
+        """Return a LangChain-compatible embedding object wired to the LRU cache."""
         if self._langchain_embeddings is None:
-            from langchain_huggingface import HuggingFaceEmbeddings
-            self._langchain_embeddings = HuggingFaceEmbeddings(
-                model_name=self.model_name,
-                model_kwargs={"device": CONFIG.embedding.device},
-                encode_kwargs={"normalize_embeddings": CONFIG.embedding.normalize_embeddings},
-            )
+            self._langchain_embeddings = CachedLangChainEmbeddings(self)
         return self._langchain_embeddings
 
     def _cache_key(self, text: str) -> str:
