@@ -12,14 +12,14 @@ logger = logging.getLogger(__name__)
 
 
 def load_pdf(file_obj) -> List[Dict[str, Any]]:
-    """Load and extract text from a PDF file using PyPDF2 with fallback to pypdf."""
+    """Load and extract text from a PDF file using pypdf with fallback to PyPDF2."""
     documents = []
     file_name = getattr(file_obj, "name", "unknown.pdf")
     file_bytes = file_obj.read() if hasattr(file_obj, "read") else file_obj
 
     try:
-        import PyPDF2
-        reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(file_bytes))
         for page_num, page in enumerate(reader.pages):
             text = page.extract_text() or ""
             if text.strip():
@@ -33,10 +33,10 @@ def load_pdf(file_obj) -> List[Dict[str, Any]]:
                     },
                 })
     except Exception as e1:
-        logger.warning(f"PyPDF2 failed ({e1}), trying pypdf...")
+        logger.warning(f"pypdf failed ({e1}), trying PyPDF2...")
         try:
-            from pypdf import PdfReader
-            reader = PdfReader(io.BytesIO(file_bytes))
+            import PyPDF2
+            reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
             for page_num, page in enumerate(reader.pages):
                 text = page.extract_text() or ""
                 if text.strip():
@@ -56,25 +56,105 @@ def load_pdf(file_obj) -> List[Dict[str, Any]]:
 
 
 def load_docx(file_obj) -> List[Dict[str, Any]]:
-    """Load and extract text from a DOCX file."""
+    """Load and extract text from a DOCX file, including tables and paragraphs."""
     from docx import Document
     file_name = getattr(file_obj, "name", "unknown.docx")
     file_bytes = file_obj.read() if hasattr(file_obj, "read") else file_obj
 
     doc = Document(io.BytesIO(file_bytes))
-    full_text = "\n".join(
-        para.text for para in doc.paragraphs if para.text.strip()
-    )
+    paragraphs = [para.text.strip() for para in doc.paragraphs if para.text.strip()]
 
-    if not full_text.strip():
+    # Extract tables into structured readable rows
+    table_lines = []
+    for table in getattr(doc, "tables", []):
+        for row in table.rows:
+            row_cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if row_cells:
+                table_lines.append(" | ".join(row_cells))
+
+    content_parts = []
+    if paragraphs:
+        content_parts.append("\n\n".join(paragraphs))
+    if table_lines:
+        content_parts.append("[Tables]\n" + "\n".join(table_lines))
+
+    full_text = "\n\n".join(content_parts).strip()
+    if not full_text:
         return []
 
     return [{
-        "page_content": full_text.strip(),
+        "page_content": full_text,
         "metadata": {
             "source": file_name,
             "file_type": "docx",
-            "paragraph_count": len(doc.paragraphs),
+            "paragraph_count": len(paragraphs),
+            "table_count": len(getattr(doc, "tables", [])),
+        },
+    }]
+
+
+def load_csv(file_obj) -> List[Dict[str, Any]]:
+    """Load tabular data from a CSV file."""
+    import csv
+    file_name = getattr(file_obj, "name", "unknown.csv")
+    raw = file_obj.read() if hasattr(file_obj, "read") else file_obj
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8", errors="replace")
+    else:
+        text = str(raw)
+
+    reader = csv.DictReader(io.StringIO(text))
+    rows = []
+    for idx, row in enumerate(reader):
+        row_str = ", ".join(f"{k}: {v}" for k, v in row.items() if v)
+        if row_str.strip():
+            rows.append(f"Row {idx + 1}: {row_str}")
+
+    if not rows:
+        return []
+
+    return [{
+        "page_content": "\n".join(rows),
+        "metadata": {
+            "source": file_name,
+            "file_type": "csv",
+            "row_count": len(rows),
+        },
+    }]
+
+
+def load_json(file_obj) -> List[Dict[str, Any]]:
+    """Load structured data from a JSON file."""
+    import json
+    file_name = getattr(file_obj, "name", "unknown.json")
+    raw = file_obj.read() if hasattr(file_obj, "read") else file_obj
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8", errors="replace")
+    else:
+        text = str(raw)
+
+    try:
+        data = json.loads(text)
+    except Exception as e:
+        logger.warning(f"JSON parsing error for {file_name}: {e}")
+        return load_txt(file_obj)
+
+    if isinstance(data, list):
+        items = [json.dumps(item, ensure_ascii=False) for item in data if item]
+        content = "\n".join(items)
+    elif isinstance(data, dict):
+        content = json.dumps(data, indent=2, ensure_ascii=False)
+    else:
+        content = str(data)
+
+    if not content.strip():
+        return []
+
+    return [{
+        "page_content": content.strip(),
+        "metadata": {
+            "source": file_name,
+            "file_type": "json",
         },
     }]
 
@@ -112,6 +192,8 @@ def load_document(file_obj) -> List[Dict[str, Any]]:
         ".doc": load_docx,
         ".txt": load_txt,
         ".md": load_txt,
+        ".csv": load_csv,
+        ".json": load_json,
     }
 
     loader = loaders.get(ext)
