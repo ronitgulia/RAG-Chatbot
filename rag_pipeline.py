@@ -315,6 +315,26 @@ class RAGPipeline:
         k = top_k or CONFIG.vector_store.top_k
         retrieved = self.vector_store.retrieve(retrieval_query, top_k=k, mode=search_mode)
 
+        # Early exit if no relevant chunks are found: avoid wasting LLM budget & hallucinating
+        if not retrieved:
+            fallback = "I could not find any relevant information in the uploaded documents to answer your question."
+            if detected_lang != "en":
+                fallback = self.multilingual.process_answer(fallback, detected_lang)
+            self.memory.add("user", question)
+            self.memory.add("assistant", fallback)
+            return {
+                "answer": fallback,
+                "sources": [],
+                "citations": [],
+                "chunks": [],
+                "evaluation": None,
+                "eval_id": None,
+                "query_language": detected_lang,
+                "lang_confidence": lang_confidence,
+                "retrieval_mode": search_mode,
+                "chunks_retrieved": 0,
+            }
+
         # 4. Build context string
         context_parts = []
         for i, chunk in enumerate(retrieved):
@@ -377,14 +397,26 @@ class RAGPipeline:
                     del self._eval_results[eval_id]  # free memory immediately
                     eval_id = None  # no need for caller to poll
 
-        # 10. Compile sources
+        # 10. Compile sources & structured citations
         sources = list({
             c.get("metadata", {}).get("source", "Unknown") for c in retrieved
         })
+        citations = []
+        for i, c in enumerate(retrieved):
+            meta = c.get("metadata", {})
+            score = c.get("score") or c.get("rrf_score")
+            citations.append({
+                "index": i + 1,
+                "source": meta.get("source", "Unknown"),
+                "page": meta.get("page"),
+                "score": round(score, 4) if score is not None else None,
+                "file_type": meta.get("file_type", "unknown"),
+            })
 
         return {
             "answer": answer,
             "sources": sources,
+            "citations": citations,
             "chunks": retrieved,
             "evaluation": eval_result,   # populated inline for fast evals
             "eval_id": eval_id,          # non-None only when still pending
