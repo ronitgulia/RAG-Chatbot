@@ -32,9 +32,19 @@ class WebScraper:
 
     @staticmethod
     def _clean_text(text: str) -> str:
-        text = re.sub(r"\s+", " ", text)
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        return text.strip()
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
+        cleaned_lines = []
+        for line in lines:
+            if not line:
+                if cleaned_lines and cleaned_lines[-1] != "":
+                    cleaned_lines.append("")
+                continue
+            low = line.lower()
+            if any(cue in low for cue in ("all rights reserved", "cookie policy", "terms of use")):
+                continue
+            cleaned_lines.append(line)
+        return "\n".join(cleaned_lines).strip()
 
     @staticmethod
     def _is_valid_url(url: str) -> bool:
@@ -79,7 +89,7 @@ class WebScraper:
         base = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
         from urllib.parse import urldefrag
         for a in soup.find_all("a", href=True):
-            href, _ = urldefrag(urljoin(base, a["href"]))
+            href, _ = urldefrag(urljoin(url, a["href"]))
             if self._is_valid_url(href) and href.startswith(base):
                 links.append(href)
 
