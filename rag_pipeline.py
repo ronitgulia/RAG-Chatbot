@@ -426,6 +426,66 @@ class RAGPipeline:
             "chunks_retrieved": len(retrieved),
         }
 
+    def stream_query(
+        self,
+        question: str,
+        top_k: int = None,
+        search_mode: str = "hybrid",
+    ):
+        """Streaming variant of query() yielding incremental token chunks.
+
+        Yields string deltas during generation for real-time frontend display.
+        Updates conversation memory automatically upon stream completion.
+        """
+        if not self.vector_store.is_ready:
+            yield "Please upload and process documents before asking questions."
+            return
+
+        if not self.llm.is_ready:
+            yield "Please configure the LLM (add your API key in Settings)."
+            return
+
+        english_query, detected_lang, _ = self.multilingual.process_query(question)
+        retrieval_query = self._make_standalone_query(english_query)
+        k = top_k or CONFIG.vector_store.top_k
+        retrieved = self.vector_store.retrieve(retrieval_query, top_k=k, mode=search_mode)
+
+        if not retrieved:
+            fallback = "I could not find any relevant information in the uploaded documents to answer your question."
+            if detected_lang != "en":
+                fallback = self.multilingual.process_answer(fallback, detected_lang)
+            self.memory.add("user", question)
+            self.memory.add("assistant", fallback)
+            yield fallback
+            return
+
+        context_parts = []
+        for i, chunk in enumerate(retrieved):
+            src = chunk.get("metadata", {}).get("source", "Unknown")
+            pg = chunk.get("metadata", {}).get("page", "")
+            page_ref = f" (page {pg})" if pg else ""
+            context_parts.append(f"[{i+1}] Source: {src}{page_ref}\n{chunk['page_content']}")
+        context = "\n\n---\n\n".join(context_parts)
+
+        history_str = self.memory.format_history()
+        prompt = RAG_SYSTEM_PROMPT.format(
+            context=context,
+            history=history_str,
+            question=english_query,
+        )
+
+        full_answer_parts = []
+        for chunk in self.llm.stream(prompt, chat_history=self.memory.get_history()):
+            full_answer_parts.append(chunk)
+            yield chunk
+
+        full_answer = "".join(full_answer_parts)
+        if detected_lang != "en":
+            full_answer = self.multilingual.process_answer(full_answer, detected_lang)
+
+        self.memory.add("user", question)
+        self.memory.add("assistant", full_answer)
+
     # ------------------------------------------------------------------ #
     #  Helpers                                                             #
     # ------------------------------------------------------------------ #

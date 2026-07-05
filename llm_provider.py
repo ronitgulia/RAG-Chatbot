@@ -204,6 +204,34 @@ class LLMProvider:
         response = self._retry_with_backoff(lambda: self._llm.invoke(messages))
         return response.content if hasattr(response, "content") else str(response)
 
+    def stream(
+        self,
+        prompt: str,
+        chat_history: Optional[List[Dict[str, str]]] = None,
+    ):
+        """Yield response tokens progressively for real-time streaming."""
+        if self._llm is None:
+            raise RuntimeError("LLM not initialized. Call initialize() first.")
+
+        from langchain_core.messages import HumanMessage, AIMessage
+
+        messages = []
+        if chat_history:
+            for turn in chat_history:
+                if turn["role"] == "user":
+                    messages.append(HumanMessage(content=turn["content"]))
+                elif turn["role"] == "assistant":
+                    messages.append(AIMessage(content=turn["content"]))
+
+        messages.append(HumanMessage(content=prompt))
+
+        if hasattr(self._llm, "stream"):
+            for chunk in self._llm.stream(messages):
+                yield chunk.content if hasattr(chunk, "content") else str(chunk)
+        else:
+            full = self.generate(prompt, chat_history=chat_history)
+            yield full
+
     @property
     def is_ready(self) -> bool:
         return self._llm is not None
