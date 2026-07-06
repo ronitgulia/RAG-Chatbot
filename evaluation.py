@@ -79,9 +79,17 @@ class RAGEvaluator:
             result = evaluate(dataset, metrics=metrics)
             result_dict = result.to_pandas().to_dict(orient="records")[0]
 
-            f = float(result_dict.get("faithfulness", 0))
-            ar = float(result_dict.get("answer_relevancy", 0))
-            cp = float(result_dict.get("context_precision", 0))
+            import math
+            def _safe_float(v):
+                try:
+                    val = float(v)
+                    return 0.0 if math.isnan(val) else val
+                except (ValueError, TypeError):
+                    return 0.0
+            
+            f = _safe_float(result_dict.get("faithfulness", 0))
+            ar = _safe_float(result_dict.get("answer_relevancy", 0))
+            cp = _safe_float(result_dict.get("context_precision", 0))
             overall = round((f + ar + cp) / 3, 3)
 
             return EvaluationResult(
