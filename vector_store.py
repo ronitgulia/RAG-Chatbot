@@ -185,7 +185,8 @@ class VectorStoreManager:
 
         def add_rrf(results, weight, rrf_k=60):
             for rank, r in enumerate(results):
-                key = r["page_content"][:200]
+                import hashlib
+                key = hashlib.md5(r["page_content"].encode('utf-8')).hexdigest()
                 content_map[key] = r
                 rrf_scores[key] = rrf_scores.get(key, 0) + weight * (1 / (rrf_k + rank + 1))
 
