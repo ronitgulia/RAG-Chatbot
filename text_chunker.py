@@ -30,6 +30,8 @@ class SmartTextChunker:
     ):
         self.chunk_size = chunk_size or CONFIG.chunking.chunk_size
         self.chunk_overlap = chunk_overlap or CONFIG.chunking.chunk_overlap
+        if self.chunk_overlap >= self.chunk_size:
+            self.chunk_overlap = self.chunk_size - 1
         self.strategy = strategy
         self._splitter = self._build_splitter()
 
@@ -95,6 +97,8 @@ class SmartTextChunker:
         """Hot-reload chunking settings."""
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        if self.chunk_overlap >= self.chunk_size:
+            self.chunk_overlap = self.chunk_size - 1
         self.strategy = strategy
         self._splitter = self._build_splitter()
-        logger.info(f"Chunker updated: size={chunk_size}, overlap={chunk_overlap}, strategy={strategy}")
+        logger.info(f"Chunker updated: size={self.chunk_size}, overlap={self.chunk_overlap}, strategy={strategy}")
