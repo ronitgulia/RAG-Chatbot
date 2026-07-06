@@ -77,8 +77,9 @@ class WebScraper:
         # Collect all internal links for crawling
         links = []
         base = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+        from urllib.parse import urldefrag
         for a in soup.find_all("a", href=True):
-            href = urljoin(base, a["href"])
+            href, _ = urldefrag(urljoin(base, a["href"]))
             if self._is_valid_url(href) and href.startswith(base):
                 links.append(href)
 
