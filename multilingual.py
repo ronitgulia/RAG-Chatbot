@@ -46,7 +46,7 @@ def translate_text(
     try:
         from googletrans import Translator
         translator = Translator()
-        src = None if source_lang == "auto" else source_lang
+        src = "auto" if source_lang == "auto" else source_lang
         result = translator.translate(text, dest=target_lang, src=src)
         return result.text
     except Exception as e:
