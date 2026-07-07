@@ -4,6 +4,8 @@ LLM provider abstraction - supports Groq (free tier) and HuggingFace Inference A
 
 import logging
 import os
+import random
+import time
 from typing import List, Dict, Optional
 
 from config import CONFIG
@@ -30,6 +32,19 @@ OLLAMA_MODELS = [
     "gemma",
     "phi3",
 ]
+
+# Error substrings that indicate a transient failure worth retrying.
+_RETRYABLE_SIGNALS = ("429", "rate_limit", "rate limit", "503", "timeout", "connection", "overloaded")
+# Error substrings that should NOT be retried (auth, bad request, etc.).
+_FATAL_SIGNALS = ("401", "403", "invalid api key", "authentication", "permission")
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Return True if *exc* looks like a transient error that is safe to retry."""
+    msg = str(exc).lower()
+    if any(sig in msg for sig in _FATAL_SIGNALS):
+        return False
+    return any(sig in msg for sig in _RETRYABLE_SIGNALS)
 
 
 class LLMProvider:
@@ -112,16 +127,69 @@ class LLMProvider:
             self._llm = None
             raise
 
+    # ------------------------------------------------------------------ #
+    #  Retry helper                                                        #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _retry_with_backoff(
+        fn,
+        max_attempts: int = 3,
+        base_delay: float = 1.0,
+        jitter: float = 0.3,
+    ):
+        """Call *fn()* up to *max_attempts* times with exponential back-off.
+
+        Back-off schedule (before jitter): 1 s → 2 s → 4 s.
+        Jitter of ±*jitter* seconds is added to each delay to reduce
+        thundering-herd on shared free-tier rate limits.
+
+        Raises immediately for non-retryable errors (e.g. 401 auth failures).
+        Raises the last exception if all retries are exhausted.
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return fn()
+            except Exception as exc:
+                last_exc = exc
+                # Auth / bad-request errors — no point retrying.
+                if not _is_retryable(exc):
+                    logger.error("LLM call failed with non-retryable error: %s", exc)
+                    raise
+                if attempt == max_attempts:
+                    break
+                delay = base_delay * (2 ** (attempt - 1)) + random.uniform(-jitter, jitter)
+                delay = max(0.1, delay)  # never sleep less than 100 ms
+                logger.warning(
+                    "LLM call failed (attempt %d/%d): %s — retrying in %.1f s",
+                    attempt, max_attempts, exc, delay,
+                )
+                time.sleep(delay)
+
+        logger.error("LLM call failed after %d attempts: %s", max_attempts, last_exc)
+        raise last_exc
+
+    # ------------------------------------------------------------------ #
+    #  Generation                                                          #
+    # ------------------------------------------------------------------ #
+
     def generate(
         self,
         prompt: str,
         chat_history: Optional[List[Dict[str, str]]] = None,
     ) -> str:
-        """Generate a response given a prompt and optional chat history."""
+        """Generate a response given a prompt and optional chat history.
+
+        Transient errors (rate limits, timeouts, 503s) are automatically
+        retried up to 3 times with exponential back-off and jitter.
+        Non-retryable errors (e.g. 401 auth failures) are re-raised
+        immediately without burning retry budget.
+        """
         if self._llm is None:
             raise RuntimeError("LLM not initialized. Call initialize() first.")
 
-        from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+        from langchain_core.messages import HumanMessage, AIMessage
 
         messages = []
         if chat_history:
@@ -133,7 +201,7 @@ class LLMProvider:
 
         messages.append(HumanMessage(content=prompt))
 
-        response = self._llm.invoke(messages)
+        response = self._retry_with_backoff(lambda: self._llm.invoke(messages))
         return response.content if hasattr(response, "content") else str(response)
 
     @property
@@ -142,4 +210,4 @@ class LLMProvider:
 
     @property
     def provider_name(self) -> str:
-        return self._provider or "None"
+        return self._provider or "None"
